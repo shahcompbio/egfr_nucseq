@@ -1,0 +1,257 @@
+---
+title: "EGFR Tumor Cell Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+---
+
+# Introduction
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(ggthemes)
+library(ggsci)
+library(dittoSeq)
+library(ggrepel)
+library(patchwork)
+library(scCustomize)
+library(glue)
+library(ggh4x)
+library(patchwork)
+library(SingleCellExperiment)
+library(Seurat)
+library(tradeSeq)
+library(slingshot)
+library(here)
+
+devtools::load_all()
+
+colors <- load_colors()
+theme_set(theme_classic())
+
+library(slurmR)
+
+opts_slurmR <- slurmR::opts_slurmR
+opts_slurmR$reset()
+opts_slurmR$set_opts(partition = "componc_cpu")
+# opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/run/munge/,/etc/slurm/,/usr/lib64/slurm,/usr/lib64/libmunge.so.2' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
+opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
+tmp_dir <- here("logs")
+dir.create(tmp_dir, recursive = T, showWarnings = F)
+```
+
+Here we fit GAMs to all genes and gene signatures
+
+# Load objects
+
+```{r}
+sce_ti_f <- here("data", "objects", "slingshot_sce_v2.rds")
+srt_ti_f <- here("data", "objects", "slingshot_pre_srt_v2.rds")
+srt_epi_f <- here("data", "objects", "egfr_epi_v2.rds")
+```
+
+# fitGAM
+
+## Genes
+
+```{r}
+overwrite <- T
+ncores <- 8
+
+out_sce <- here("data", "objects", "sce_gam_v2.rds")
+
+# fit negative binomial GAM
+
+if (!file.exists(out_sce) | overwrite) {
+  Slurm_lapply(
+    job_name = glue("tradeseq_genes"),
+    njobs = 1,
+    mc.cores = ncores,
+    tmp_path = tmp_dir,
+    export = c(
+      "srt_epi_f",
+      "srt_ti_f",
+      "sce_ti_f",
+      "out_sce",
+      "ncores"
+    ),
+    plan = "submit",
+    sbatch_opt = list(
+      partition = "componc_cpu",
+      mem = "400G",
+      time = "24:00:00"
+    ),
+    X = list(1),
+    FUN = function(x) {
+      # Return to full object
+      srt_epi <- readRDS(srt_epi_f)
+
+      srt_tum <- srt_epi[, srt_epi$is_tumor_cell]
+
+      srt_ti <- readRDS(srt_ti_f)
+      sce_ti <- readRDS(sce_ti_f)
+
+      # Subsample cells across each cluster
+      set.seed(3)
+      cell_samp <- srt_ti@meta.data %>%
+        group_by(mcluster_merge) %>%
+        slice_sample(n = 2000) %>%
+        pull(cell_id)
+      # Override to do this on all cells
+      # cell_samp <- colnames(srt_ti)
+
+      # # Label TFs
+      # tfdf <- read.table(file = "/data1/shahs3/junobackup/users/zatzmanm/references/TF_data/DatabaseExtract_v_1.01.txt", header = T, sep = "\t", quote = "\"", strip.white = T, fill = T, check.names = F)
+      # tfdf <- janitor::clean_names(tfdf)
+
+      # Override to include all genes
+      genes <- rownames(srt_tum)
+
+      # BPPARAM <- BiocParallel::MulticoreParam(workers = ncores, progressbar = T)
+      BPPARAM <- BiocParallel::bpparam()
+      BPPARAM$workers <- ncores
+
+      pseudotime <- slingPseudotime(sce_ti, na = FALSE)
+
+      cellWeights <- slingCurveWeights(sce_ti)
+
+      # Must use the full count dataset to ensure proper normalization
+      counts <- srt_tum[["RNA"]]$counts[, cell_samp]
+
+      # Require at least 1 count in n cells to fit model
+      genes <- unique(names(which(rowSums(counts[genes, ] >= 1) >= 50)))
+
+      pseudotime <- pseudotime[cell_samp, ]
+      cellWeights <- cellWeights[cell_samp, ]
+      # aicK <- evaluateK(counts = counts,
+      #                   nGenes = 100,
+      #                   k = 3:5,
+      #                   verbose = T,
+      #                   pseudotime = pseudotime[cell_samp,],
+      #                   cellWeights = cellWeights[cell_samp,],
+      #                   parallel = F,
+      #                   BPPARAM = BPPARAM)
+      start.time <- Sys.time()
+
+      sce <- fitGAM(
+        counts = counts,
+        genes = genes,
+        pseudotime = pseudotime,
+        cellWeights = cellWeights,
+        parallel = TRUE,
+        BPPARAM = BPPARAM
+      )
+      end.time <- Sys.time()
+      time.taken <- end.time - start.time
+      print(time.taken)
+
+      saveRDS(object = sce, file = out_sce)
+    }
+  )
+}
+```
+
+## Signatures
+
+Here we set family to gaussian and offset=0 prior to running
+
+```{r}
+overwrite <- T
+ncores <- 8
+
+pathways <- read.table(file = here("metadata", "pathways", "egfr_pathways_v2.txt"), header = T, sep = "\t")$pathway %>%
+  unique()
+
+all(unique(pathways) %in% colnames(srt_tum@meta.data))
+
+out_sce <- here("data", "objects", "sce_gam_sigs_v1.rds")
+
+# fit negative binomial GAM
+
+if (!file.exists(out_sce) | overwrite) {
+  Slurm_lapply(
+    job_name = glue("tradeseq_sigs"),
+    njobs = 1,
+    mc.cores = ncores,
+    tmp_path = tmp_dir,
+    export = c(
+      "srt_epi_f",
+      "srt_ti_f",
+      "sce_ti_f",
+      "out_sce",
+      "ncores",
+      "pathways"
+    ),
+    plan = "submit",
+    sbatch_opt = list(
+      partition = "componc_cpu",
+      mem = "300G",
+      time = "24:00:00"
+    ),
+    X = list(1),
+    FUN = function(x) {
+      # Return to full object
+      srt_epi <- readRDS(srt_epi_f)
+
+      srt_tum <- srt_epi[, srt_epi$is_tumor_cell]
+
+      srt_ti <- readRDS(srt_ti_f)
+      sce_ti <- readRDS(sce_ti_f)
+
+      # Subsample cells across each cluster
+      set.seed(3)
+      cell_samp <- srt_ti@meta.data %>%
+        group_by(mcluster_merge) %>%
+        slice_sample(n = 100) %>%
+        pull(cell_id)
+
+      BPPARAM <- BiocParallel::MulticoreParam(workers = ncores, progressbar = T)
+
+      pseudotime <- slingPseudotime(sce_ti, na = FALSE)
+
+      cellWeights <- slingCurveWeights(sce_ti)
+
+      # Must use the full count dataset to ensure proper normalization
+      counts <- t(as.matrix(srt_tum@meta.data[, pathways]))[, cell_samp]
+
+      # Require at least 1 count in n cells to fit model
+      genes <- pathways
+
+      pseudotime <- pseudotime[cell_samp, ]
+      cellWeights <- cellWeights[cell_samp, ]
+      # aicK <- evaluateK(counts = counts,
+      #                   nGenes = 100,
+      #                   k = 3:5,
+      #                   verbose = T,
+      #                   pseudotime = pseudotime[cell_samp,],
+      #                   cellWeights = cellWeights[cell_samp,],
+      #                   parallel = F,
+      #                   BPPARAM = BPPARAM)
+      start.time <- Sys.time()
+
+      sce <- fitGAM(
+        counts = counts,
+        genes = genes,
+        pseudotime = pseudotime,
+        offset = rep(0, nrow(counts)),
+        family = "gaussian",
+        cellWeights = cellWeights,
+        parallel = TRUE,
+        sce = T,
+        BPPARAM = BPPARAM
+      )
+      end.time <- Sys.time()
+      time.taken <- end.time - start.time
+      print(time.taken)
+
+      saveRDS(object = sce, file = out_sce)
+    }
+  )
+}
+```

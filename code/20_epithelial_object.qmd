@@ -1,0 +1,103 @@
+---
+title: "Generate Epithelial Cell Object"
+author: "Matthew Zatzman"
+---
+
+# Introduction
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(glue)
+library(Seurat)
+library(here)
+
+devtools::load_all()
+```
+
+
+
+## Load Data
+
+```{r}
+db <- load_project(tumor_obj = NULL)
+srt <- db$srt
+```
+
+## Epithelial Object
+
+We'll vet the tumor cell calls on an integrated epithelial object. Looking for obvious patient specific clusters where tumor and epithelial are together (accounting for tissue specific clusters which are expected)
+
+```{r}
+srt_epi <- srt[, srt$cell_type_super == "Epithelial"]
+
+# Densify
+srt_epi[["RNA"]]$counts <- as(srt_epi[["RNA"]]$counts, Class = "dgCMatrix")
+srt_epi[["RNA"]]$data <- as(srt_epi[["RNA"]]$data, Class = "dgCMatrix")
+```
+
+
+No Batch correction
+
+```{r}
+srt_epi <- FindVariableFeatures(srt_epi)
+srt_epi <- ScaleData(srt_epi)
+srt_epi <- RunPCA(srt_epi)
+srt_epi <- RunUMAP(srt_epi, dims = 1:30, reduction.name = "umap_nb")
+srt_epi <- FindNeighbors(srt_epi, dims = 1:30, graph.name = c("RNA_nn_nb", "RNA_snn_nb"))
+srt_epi <- FindClusters(srt_epi, resolution = 0.25, cluster.name = "epi_clusters_nb", graph.name = "RNA_snn_nb")
+```
+
+With batch correction
+
+```{r}
+srt_epi <- RunUMAP(srt_epi, reduction = "RNA_rpca_integrated", dims = 1:30, reduction.name = "umap")
+srt_epi <- FindNeighbors(srt_epi, dims = 1:30, reduction = "RNA_rpca_integrated", graph.name = c("RNA_nn", "RNA_snn"))
+srt_epi <- FindClusters(srt_epi, resolution = 0.25, cluster.name = "epi_clusters", graph.name = "RNA_snn")
+srt_epi <- FindClusters(srt_epi, resolution = 0.5, cluster.name = "epi_clusters_0.5", graph.name = "RNA_snn")
+```
+
+Assign labels
+
+```{r}
+srt_epi$cell_type_epi <- srt_epi@meta.data %>%
+  mutate(
+    cell_type_epi =
+      case_when(
+        epi_clusters_0.5 == 0 ~ "AT2-like", # more club
+        epi_clusters_0.5 == 1 ~ "PDTC 1",
+        epi_clusters_0.5 == 2 ~ "AT2-like PDTC",
+        epi_clusters_0.5 == 3 ~ "AT2-like",
+        epi_clusters_0.5 == 4 ~ "AT1-like",
+        epi_clusters_0.5 == 5 ~ "PDTC 4", # Lost alveolar markers, some basal-like
+        epi_clusters_0.5 == 6 ~ "PDTC 3", # more basal + cycling
+        epi_clusters_0.5 == 7 ~ "Cycling",
+        epi_clusters_0.5 == 8 ~ "Multiciliated",
+        epi_clusters_0.5 == 9 ~ "PDTC 2", # Picking up basal markers
+        epi_clusters_0.5 == 10 ~ "Basal-like",
+        epi_clusters_0.5 == 11 ~ "Hepatocyte-like",
+        epi_clusters_0.5 == 12 ~ "Neuroendocrine",
+        epi_clusters_0.5 == 13 ~ "PD9/PD27 unk.",
+        .default = "Other"
+      )
+  ) %>%
+  pull(cell_type_epi)
+
+srt_epi$cell_type_epi <- factor(srt_epi$cell_type_epi, levels = epi_ct_order)
+
+# Grouped PDCs
+srt_epi$cell_type_epi_coarse <- srt_epi@meta.data %>%
+  mutate(cell_type_epi_coarse = case_when(
+    grepl("*PDTC*", cell_type_epi) ~ "PDTC",
+    .default = cell_type_epi
+  )) %>%
+  pull(cell_type_epi_coarse)
+```
+
+##### SAVE OUT
+
+```{r}
+saveRDS(srt_epi, file = here("data", "objects", "egfr_epi.rds"), compress = F)
+```
+
+

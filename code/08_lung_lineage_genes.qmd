@@ -1,0 +1,41 @@
+---
+title: "Get HLCA Epithelial Lineage Markers"
+format: html
+---
+
+
+```{r}
+library(tidyverse)
+library(Seurat)
+library(readxl)
+library(here)
+```
+
+
+```{r}
+hlca_markers <- read_excel("41591_2023_2327_MOESM3_ESM.xlsx", sheet = "6 - marker genes", skip = 1)[, -1] %>%
+  janitor::clean_names()
+
+# Grab columms with "marker_for' having epithelial, and take only those with epithelial in them
+cols <- grep("_marker_for", colnames(hlca_markers), value = T)
+
+epi_cols <- map(cols, .f = function(x) {
+  any(grepl("Epithelial", hlca_markers[[x]]))
+}) %>%
+  list_c()
+
+cts <- gsub("_marker_for", "", cols[epi_cols])
+
+all_markers <- hlca_markers[, paste0(cts, "_marker")]
+
+all_markers <- unlist(all_markers) %>%
+  unique() %>%
+  na.omit()
+```
+
+
+```{r}
+writeLines(c("Gene", all_markers), con = here("03_trajectory", "hlca_epi_markers.txt"))
+```
+
+

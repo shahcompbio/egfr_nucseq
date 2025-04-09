@@ -1,0 +1,553 @@
+---
+title: "EGFR Load Impact"
+format: html
+---
+
+```{r setup}
+library(tidyverse)
+library(patchwork)
+library(glue)
+library(ComplexHeatmap)
+library(here)
+
+devtools::load_all()
+```
+
+
+```{r}
+impact_data <- readRDS(here("results", "impact_data.rds"))
+# metadata <- load_metadata()
+metadata <- read.table(file = here("metadata", "metadata_update_dec_2024.txt"), header = T, sep = "\t", quote = "\"")
+metadata$has_impact <- !is.na(metadata$impact)
+markers <- load_markers()
+```
+
+
+Use the oncokb mutations to define secondary MAPK alterations across samples
+
+```{r}
+library(gt)
+oncokb_samp <- impact_data$oncokb_dat$oncokb_clindat[, c("dmp_sample", "oncogenic_mutations", "resistance_mutations")] %>%
+  left_join(metadata[, c("sample_id", "closest_impact_to_sample", "de_novo_mutation_egfr_specifics", "secondary_egfr_genomic", "secondary_other_mapk_genomic")], by = c("dmp_sample" = "closest_impact_to_sample"))
+oncokb_samp$has_impact <- T
+
+# The five without impact
+other_samp <- metadata[is.na(metadata$closest_impact_to_sample), c("sample_id", "closest_impact_to_sample", "de_novo_mutation_egfr_specifics", "secondary_egfr_genomic", "secondary_other_mapk_genomic")]
+other_samp$has_impact <- F
+
+full_set <- plyr::rbind.fill(oncokb_samp, other_samp) %>%
+  left_join(metadata[, c("sample_id", "time_point", "procedure", "impact", "osi_start")]) %>%
+  mutate(
+    impact_tp_diff = impact - procedure,
+    impact_osi_diff = impact - osi_start
+  ) %>%
+  mutate(
+    impact_before_procedure = impact_tp_diff < 0,
+    impact_before_osi = impact_osi_diff < 0
+  ) %>%
+  dplyr::relocate(sample_id, dmp_sample, has_impact, time_point, impact, procedure) %>%
+  mutate(
+    time_point = fct_relevel(time_point, "Pre", "On", "PD"),
+    sample_id = fct_relevel(sample_id, gtools::mixedsort(sample_id))
+  ) %>%
+  arrange(time_point, sample_id)
+
+write.table(full_set, file = here("metadata", "supplemental_mapk_mutation_table_raw.txt"), col.names = T, quote = F, sep = "\t", row.names = F)
+
+
+tab <- full_set %>%
+  mutate(sample_id = factor(sample_id, levels = gtools::mixedsort(unique(metadata$sample_id)))) %>%
+  select("Sample" = sample_id, time_point, "IMPACT ID" = closest_impact_to_sample, "Primary EGFR Mutation" = de_novo_mutation_egfr_specifics, "Secondary EGFR Mutation" = secondary_egfr_genomic, "Secondary MAPK Alteration" = secondary_other_mapk_genomic, oncogenic_mutations, resistance_mutations, impact, procedure, impact_before_procedure, impact_before_osi) %>%
+  arrange(time_point, Sample) %>%
+  group_by(time_point) %>%
+  gt(rowname_col = "Sample") %>%
+  tab_spanner(
+    label = "EGFR Mutations",
+    columns = c("Primary EGFR Mutation", "Secondary EGFR Mutation")
+  ) %>%
+  # cols_width(
+  #   # This isn't quite working
+  #   Sample ~ px(200),
+  #   starts_with("IMPACT") ~ px(500)
+  # ) %>%
+  opt_stylize(style = 4) # %>%
+# tab_style(
+#   style = list(
+#     cell_fill(color = "blue")
+#   ),
+#   locations = cells_body(
+#     columns = "Histological Transformation",
+#     rows = "Histological Transformation" == "sclc"
+#   )
+# )
+
+# gtsave(tab, filename = here("plots", "summary_table.html"))
+tab
+```
+
+
+
+Format a nice table with the relevant information per sample as a reference
+
+```{r, fig.width=10, fig.height=8}
+library(gt)
+tab <- metadata %>%
+  mutate(sample_id = factor(sample_id, levels = gtools::mixedsort(unique(metadata$sample_id)))) %>%
+  select("Sample" = sample_id, time_point, "IMPACT ID" = closest_impact_to_sample, "Primary EGFR Mutation" = de_novo_mutation_egfr_specifics, "Secondary EGFR Mutation" = secondary_egfr_genomic, "Secondary MAPK Alteration" = secondary_other_mapk_genomic, ) %>%
+  arrange(time_point, Sample) %>%
+  group_by(time_point) %>%
+  gt(rowname_col = "Sample") %>%
+  tab_spanner(
+    label = "EGFR Mutations",
+    columns = c("Primary EGFR Mutation", "Secondary EGFR Mutation")
+  ) %>%
+  # cols_width(
+  #   # This isn't quite working
+  #   Sample ~ px(200),
+  #   starts_with("IMPACT") ~ px(500)
+  # ) %>%
+  opt_stylize(style = 4) # %>%
+# tab_style(
+#   style = list(
+#     cell_fill(color = "blue")
+#   ),
+#   locations = cells_body(
+#     columns = "Histological Transformation",
+#     rows = "Histological Transformation" == "sclc"
+#   )
+# )
+
+# gtsave(tab, filename = here("plots", "summary_table.html"))
+tab
+```
+
+
+
+```{r}
+```
+
+
+
+```{r}
+onco_signals <- c("Cell Cycle", "HIPPO", "MYC", "NOTCH", "NRF2", "PI3K", "TGF-Beta", "RTK RAS", "TP53", "WNT")
+res <- map(onco_signals, .f = function(x) {
+  sr <- 1
+  if (x == "Cell Cycle") {
+    sr <- 3
+  }
+  df <- openxlsx::read.xlsx(xlsxFile = here("impact", "mmc3.xlsx"), sheet = x, check.names = F, colNames = T, rowNames = F, startRow = sr) %>%
+    dplyr::mutate("Pathway" = x, .before = 1) %>%
+    janitor::clean_names()
+  return(df)
+})
+
+genelist <- map2(res, onco_signals, \(x, y) {
+  data.frame(Pathway = y, Gene = x$gene)
+}) %>%
+  list_rbind()
+
+resistance_genes <- data.frame("Pathway_resistance" = "Resistance Gene", Gene = markers$resistance_genes)
+```
+
+
+```{r}
+impact_groupings <- read.table(file = here("impact", "impact_pathway_groupings.txt"), header = T, sep = "\t")
+
+impact_2 <- read.table(file = here("impact", "impact_annos_sarcoma.txt"), header = T, sep = "\t")
+```
+
+
+```{r}
+impact_groupings$Hugo_symbol %in% genelist$Gene
+```
+
+
+
+```{r}
+table(unique(impact_data$onco_dat_full$Gene) %in% genelist$Gene)
+```
+
+
+```{r}
+table(unique(impact_data$onco_dat_full$Gene) %in% impact_groupings$Hugo_symbol)
+```
+
+
+```{r}
+table(unique(impact_data$onco_dat_full$Gene) %in% impact_2$Hugo.symbol)
+```
+
+```{r}
+table(unique(impact_data$onco_dat_full$Gene) %in% resistance_genes$Gene)
+```
+
+
+Merge
+
+```{r}
+impact_list <- genelist %>%
+  left_join(y = impact_groupings, by = c("Gene" = "Hugo_symbol"), suffix = c("_cell", "_list1")) %>%
+  left_join(y = impact_2, by = c("Gene" = "Hugo.symbol")) %>%
+  dplyr::rename("Pathway_sarcoma" = "Pathway") %>%
+  dplyr::relocate("Gene") %>%
+  mutate(
+    in_egfr = Gene %in% impact_data$onco_dat_full$Gene,
+    Pathway_cell = janitor::make_clean_names(Pathway_cell, allow_dupes = T),
+    Pathway_list1 = janitor::make_clean_names(Pathway_list1, allow_dupes = T),
+    Pathway_sarcoma = janitor::make_clean_names(Pathway_sarcoma, allow_dupes = T),
+  ) %>%
+  add_count(Gene)
+
+impact_list$pathway <- impact_list$Pathway_sarcoma
+impact_list$pathway[impact_list$pathway == "na" & impact_list$Pathway_cell != "na"] <- impact_list$Pathway_cell[impact_list$pathway == "na" & impact_list$Pathway_cell != "na"]
+
+impact_list$pathway[impact_list$pathway == "na" & impact_list$Pathway_list1 != "na"] <- impact_list$Pathway_list1[impact_list$pathway == "na" & impact_list$Pathway_list1 != "na"]
+
+# if n = 2 take pathway_cell or
+impact_list$pathway[impact_list$n == 2] <- impact_list$Pathway_cell[impact_list$n == 2]
+
+impact_df <- impact_list %>%
+  distinct(Gene, pathway, in_egfr) %>%
+  filter(!(Gene == "SCRIB" & pathway == "rtk_ras"))
+
+rownames(impact_df) <- impact_df$Gene
+
+impact_df$resistance_gene <- impact_df$Gene %in% resistance_genes$Gene
+
+write.table(x = impact_df, file = here("impact", "impact_mapping.txt"), quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+# ONCOPRINT
+
+Metadata
+
+```{r}
+cmap <- load_colors()
+
+onco_meta <- impact_data$clin_dat_sample %>%
+  inner_join(metadata, by = c("dmp_sample" = "closest_impact_to_sample")) %>%
+  left_join(impact_data$facets_data)
+
+rownames(onco_meta) <- onco_meta$sample_id
+
+onco_meta$time_point <- factor(onco_meta$time_point, levels = c("Pre", "On", "Progression"))
+
+onco_dat <- inner_join(impact_data$onco_dat_full, onco_meta)
+```
+
+
+```{r}
+# filter(onco_dat, Gene %in% markers$resistance_genes) %>% view
+```
+
+
+Prepare for plotting
+
+```{r, fig.width=11, fig.height=10}
+# Add sensible patient IDs
+# Add in patients that are missing (keep empty)
+# Fix colors and rect shapes
+# Sample and patient metadata
+# Sample metadata
+
+library(ComplexHeatmap)
+
+comut_mat <- onco_dat %>%
+  filter(Gene %in% impact_df$Gene) %>%
+  filter(dmp_tumor %in% onco_meta$dmp_tumor) %>%
+  pivot_wider(id_cols = sample_id, names_from = Gene, values_from = mutation_type_simple, values_fn = function(x) paste0(x, collapse = ";"), values_fill = "") %>%
+  column_to_rownames("sample_id") %>%
+  as.matrix() %>%
+  t()
+
+### Add the empty samples
+samps_add <- setdiff(onco_meta$dmp_tumor, colnames(comut_mat))
+samps_add_mat <- matrix(data = "", nrow = nrow(comut_mat), ncol = length(samps_add), dimnames = list(rownames(comut_mat), samps_add))
+comut_mat_final <- cbind(comut_mat, samps_add_mat)
+####
+
+comut_mat_final <- comut_mat
+
+# Reorder metadata
+onco_meta <- onco_meta[colnames(comut_mat_final), ]
+
+mut_pal <- c(
+  "Missense Mutation" = "#1C91D4",
+  "Nonsense Mutation" = "#D5C711",
+  "Deep Deletion" = "blue",
+  "Amplification" = "red",
+  "Frameshift Indel" = "#D55E00",
+  "Inframe Indel" = "#CC79A7",
+  "RNA Fusion" = "#F0E442",
+  "Structural Variant" = "#56B4E9",
+  "Other" = "#007756"
+)
+
+
+gene_groups <- impact_df[rownames(comut_mat_final), "pathway", drop = F]
+
+gene_groups$pathway <- fct_infreq(gene_groups$pathway)
+
+gene_groups <- gene_groups %>%
+  arrange(pathway)
+
+
+comut_mat_final <- comut_mat_final[rownames(gene_groups), ]
+
+# cli::cli_alert_danger("Missing {unique(onco_dat$mutation_type_simple)[!unique(onco_dat$mutation_type_simple) %in% names(mut_pal)]} mutations")
+```
+
+
+```{r, fig.width=11, fig.height=10}
+alter_fun <- list(
+  background = alter_graphic("rect", fill = "#CCCCCC"),
+  "Amplification" = alter_graphic("rect", fill = mut_pal["Amplification"]),
+  "Deep Deletion" = alter_graphic("rect", fill = mut_pal["Deep Deletion"]),
+  "Missense Mutation" = alter_graphic("rect", height = 0.33, fill = mut_pal["Missense Mutation"]),
+  "Nonsense Mutation" = alter_graphic("rect", height = 0.33, fill = mut_pal["Nonsense Mutation"]),
+  "Frameshift Indel" = alter_graphic("rect", height = 0.33, fill = mut_pal["Frameshift Indel"]),
+  "Inframe Indel" = alter_graphic("rect", height = 0.33, fill = mut_pal["Inframe Indel"]),
+  "RNA Fusion" = alter_graphic("rect", height = 1, width = 0.33, fill = mut_pal["RNA Fusion"]),
+  "Structural Variant" = alter_graphic("rect", height = 0.33, fill = mut_pal["Structural Variant"]),
+  "Other" = alter_graphic("rect", height = 0.33, fill = mut_pal["Other"])
+)
+
+# tp_names <- levels(factor(onco_meta$timepoint))
+# tp_cols <- set_names(circlize::colorRamp2(c(0, 5), c("lightblue", "darkblue"))(1:length(tp_names)), tp_names)
+#
+# pt_cols <- set_names(ggthemes::ptol_pal()(length(unique(onco_meta$patient))), sort(unique(onco_meta$patient)))
+
+
+anno_cols <- list(
+  "timepoint" = cmap$time_point,
+  "progressed" = cmap$tf,
+  "mapk_sustained_genome" = cmap$tf,
+  "histological_transformation_clinical" = cmap$tf,
+  # "WGD" = cmap$tf,
+  "resistance" = cmap$mech_resistance # ,
+  # "age" = circlize::colorRamp2(range(onco_meta$AGE_AT_SEQ_REPORTED_YEARS, na.rm = T), hcl_palette = "SunsetDark", reverse = TRUE)
+)
+
+# anno_labels <- c("Mutation Type", names(anno_cols))
+# anno_labels[anno_labels == "Age"] <- "Age (months)"
+# anno_labels[anno_labels == "WBC"] <- "WBC (10^9/l)"
+
+tmb_breaks <- c(1, 10, 100)
+
+
+top_anno <- HeatmapAnnotation(
+  annotation_name_side = "left",
+  annotation_label = c(
+    "TMB",
+    # "FGA",
+    # "WGD",
+    "Ever progressed?",
+    # "Age",
+    # "Panel type",
+    "mapk_sustained_genome",
+    "histological_transformation_clinical",
+    "Time point"
+  ),
+  # cbar = anno_oncoprint_barplot(),
+  TMB = anno_barplot(
+    x = log10(onco_meta$CVR_TMB_SCORE + 1),
+    axis_param = list(
+      at = log10(tmb_breaks + 1),
+      labels = tmb_breaks,
+      side = "left"
+    ),
+    ylim = c(log10(1), log10(100)),
+    border = FALSE,
+    baseline = 0
+  ),
+  # FGA = onco_meta$facets_fga,
+  # WGD = onco_meta$facets_wgd,
+  # timepoint = onco_meta$time_point,
+  progressed = onco_meta$progressed,
+  # age = onco_meta$AGE_AT_SEQ_REPORTED_YEARS,
+  # assay_type = onco_meta$GENE_PANEL,
+  mapk_sustained_genome = onco_meta$mapk_sustained_genomic,
+  histological_transformation_clinical = onco_meta$histological_transformation_clinical_simple,
+  timepoint = anno_block(
+    gp = gpar(fill = cmap$time_point),
+    labels = c("Pre-treatment", "On\ntreatment", "Progression"),
+    labels_gp = gpar(col = "white", fontsize = 11)
+  ),
+
+  # timepoint = onco_meta$timepoint,
+  # response = onco_meta$response_category,
+  # disease_status = onco_meta$disease_status,
+  # chemo = onco_meta$chemo,
+  # transplant = onco_meta$transplant,
+  # t8_21 = onco_meta$t8_21,
+  col = anno_cols
+)
+
+
+gene_anno <- HeatmapAnnotation(df = gene_groups, which = "row")
+```
+
+
+Plot the plot
+
+```{r}
+min_mut_freq <- 0.00
+
+# Get mutation frequencies
+mut_freq <- (apply(comut_mat_final, MARGIN = 1, function(x) sum(x != "")) / ncol(comut_mat_final)) %>%
+  sort(decreasing = T)
+
+plot_genes <- names(which(mut_freq >= min_mut_freq))
+```
+
+Plot and save
+
+```{r, fig.width=15, fig.height=12}
+ht <- oncoPrint(comut_mat_final,
+  right_annotation = rowAnnotation(
+    row_barplot = anno_oncoprint_barplot(show_fraction = F, border = F)
+  ),
+  top_annotation = top_anno,
+  column_split = onco_meta$time_point,
+  row_split = gene_groups$pathway,
+  row_title_rot = 0,
+  # row_names_side = "left",
+  column_title = NULL,
+  alter_fun = alter_fun,
+  col = mut_pal,
+  show_column_names = TRUE,
+  remove_empty_columns = FALSE,
+  # pct_side = "right",
+  column_title_rot = 0,
+  border = TRUE
+)
+
+# pdf(file = "oncoprint.pdf", width = 15, height = 13)
+draw(ht)
+# dev.off()
+
+# suppressWarnings(ht)
+```
+
+Binarize each sample has having an alteration or not. Plus secondary EGFR or not
+
+```{r}
+egfr_hits <- onco_dat %>%
+  filter(Gene == "EGFR") %>%
+  left_join(impact_df) %>%
+  add_count(sample_id, Gene) %>%
+  distinct(sample_id, Gene, n, mutation_type_simple, HGVSp_Short, mech_resistance, secondary_egfr_genomic, de_novo_mutation_egfr_specifics, time_point, pathway, mech_of_resistance_to_osimertinib, mech_of_resistance_classification, notes) %>%
+  arrange(time_point, sample_id, n)
+
+egfr_hits$mut_type <- egfr_hits$HGVSp_Short
+
+egfr_hits$mut_type[is.na(egfr_hits$mut_type)] <- egfr_hits$mutation_type_simple[is.na(egfr_hits$mut_type)]
+
+
+p1 <- egfr_hits %>%
+  distinct(sample_id, time_point, n) %>%
+  ggplot(aes(x = fct_reorder(sample_id, -n, mean), y = n)) +
+  geom_col() +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(x = "Sample", y = "")
+
+
+
+p2 <- ggplot(egfr_hits, aes(x = fct_reorder(sample_id, -n, mean), y = fct_rev(fct_infreq(mut_type)))) +
+  geom_tile() +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(x = "Sample", y = "Mutation")
+
+p1 + p2 + plot_layout(axes = "collect", ncol = 1, heights = c(1, 5))
+```
+
+Reannotate samples using the following
+
+```{r}
+egfr_hits %>%
+  filter(n > 1 | mech_of_resistance_classification == "On Target") %>%
+  pivot_wider(id_cols = c(sample_id, time_point, mech_resistance, secondary_egfr_genomic, de_novo_mutation_egfr_specifics, mech_of_resistance_classification, mech_of_resistance_to_osimertinib), names_from = Gene, values_from = mut_type, values_fn = function(x) paste0(x, collapse = "; "), values_fill = "") %>%
+  view()
+```
+
+
+Then check for other secondary hits that can be labelled according to known resistance mechanisms
+
+```{r}
+all_resist <- onco_dat %>%
+  # filter(Gene =="EGFR") %>%
+  left_join(impact_df) %>%
+  add_count(sample_id, Gene) %>%
+  distinct(sample_id, Gene, n, mutation_type, mutation_type_simple, HGVSp_Short, secondary_egfr_genomic, secondary_other_mapk_genomic, de_novo_mutation_egfr_specifics, time_point, mech_resistance, pathway, mech_of_resistance_to_osimertinib, mech_of_resistance_classification, notes) %>%
+  arrange(time_point, sample_id, n)
+
+all_resist$mut_type <- all_resist$HGVSp_Short
+
+all_resist$mut_type[is.na(all_resist$mut_type)] <- all_resist$mutation_type_simple[is.na(all_resist$mut_type)]
+all_resist$mut_type[is.na(all_resist$mut_type) | all_resist$mut_type == ""] <- all_resist$mutation_type[is.na(all_resist$mut_type) | all_resist$mut_type == ""]
+
+
+other_muts <- all_resist %>%
+  filter(!is.na(pathway), Gene != "EGFR") %>%
+  mutate("gene_mut" = paste(Gene, mut_type, sep = ": ")) %>%
+  # filter(n > 1 | mech_of_resistance_classification == "On Target") %>%
+  pivot_wider(id_cols = c(sample_id, time_point, mech_resistance, secondary_egfr_genomic, de_novo_mutation_egfr_specifics, secondary_other_mapk_genomic, mech_of_resistance_classification, mech_of_resistance_to_osimertinib), names_from = pathway, values_from = gene_mut, values_fn = function(x) paste0(x, collapse = "; "), values_fill = "")
+
+openxlsx::write.xlsx(other_muts, file = here("impact", "other_muts.xlsx"))
+```
+
+
+```{r}
+other_muts_binary <- other_muts %>%
+  select(any_of(unique(impact_df$pathway))) %>%
+  as.matrix()
+
+other_muts_binary[other_muts_binary != ""] <- 1
+other_muts_binary[other_muts_binary == ""] <- 0
+other_muts_binary <- apply(other_muts_binary, MARGIN = 2, as.numeric)
+
+rownames(other_muts_binary) <- other_muts$sample_id
+
+Heatmap(t(other_muts_binary), cluster_rows = F, cluster_columns = F)
+```
+
+
+
+Format a nice table with the relevant information per sample as a reference
+
+```{r, fig.width=10, fig.height=8}
+library(gt)
+tab <- metadata %>%
+  mutate(sample_id = factor(sample_id, levels = gtools::mixedsort(unique(metadata$sample_id)))) %>%
+  select("Sample" = sample_id, time_point, "IMPACT ID" = closest_impact_to_sample, "Primary EGFR Mutation" = de_novo_mutation_egfr_specifics, "Secondary EGFR Mutation" = secondary_egfr_genomic, "Secondary MAPK Alteration" = secondary_other_mapk_genomic) %>%
+  arrange(time_point, Sample) %>%
+  group_by(time_point) %>%
+  gt(rowname_col = "Sample") %>%
+  tab_spanner(
+    label = "EGFR Mutations",
+    columns = c("Primary EGFR Mutation", "Secondary EGFR Mutation")
+  ) %>%
+  # cols_width(
+  #   # This isn't quite working
+  #   Sample ~ px(200),
+  #   starts_with("IMPACT") ~ px(500)
+  # ) %>%
+  opt_stylize(style = 4) # %>%
+# tab_style(
+#   style = list(
+#     cell_fill(color = "blue")
+#   ),
+#   locations = cells_body(
+#     columns = "Histological Transformation",
+#     rows = "Histological Transformation" == "sclc"
+#   )
+# )
+
+# gtsave(tab, filename = here("plots", "summary_table.html"))
+tab
+```
+
+
+

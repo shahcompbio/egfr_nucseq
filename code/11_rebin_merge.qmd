@@ -1,0 +1,115 @@
+---
+title: "EGFR Infer CNV Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+execute:
+  cache: false
+---
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(anndata)
+library(ggthemes)
+library(dittoSeq)
+library(patchwork)
+library(Matrix)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(here)
+devtools::load_all("~/repos/scatools")
+```
+
+## Load metadata
+
+```{r}
+metadata <- read.table(here("cnv", "infercnv", "infercnv_run_metadata.txt.gz"), header = TRUE, sep = "\t", quote = "\"")
+rownames(metadata) <- metadata$cell_id
+metadata$orig_barcode <- with(metadata, paste(individual, sample_id, individual, sample_id, Barcode, sep = "_"))
+bins <- get_tiled_bins(bs_genome = BSgenome.Hsapiens.UCSC.hg38::BSgenome.Hsapiens.UCSC.hg38, tilewidth = 1e7, respect_chr_arms = TRUE)
+```
+
+
+## Rebin
+
+Rebin the counts into a `SingleCellExperiment` binned at 10mb
+
+```{r}
+overwrite <- T
+# Get all gene ordering
+gene_order <- read.table(file = here("cnv", "infercnv", "gene_order_gene_name.txt"), col.names = c("gene", "chr", "start", "end"))
+rownames(gene_order) <- gene_order$gene
+
+results_dir <- here("cnv", "infercnv", "results_w_ctrl")
+samples <- dir(results_dir)
+
+# counts_list <- vector(mode = "list")
+
+for (i in seq_along(samples)) {
+  samp <- samples[i]
+
+  print(glue("{i}: {samp}"))
+
+  sce_rb_f <- file.path(results_dir, samp, "sce_10mb_update.rds")
+
+  if (file.exists(sce_rb_f)) {
+    message("Final out found")
+    next
+  }
+
+  infercnv_obj_f <- file.path(results_dir, samp, "run.final.infercnv_obj")
+
+  if (file.exists(infercnv_obj_f) | overwrite) {
+    counts <- readRDS(infercnv_obj_f)@expr.data
+  } else {
+    logger::log_warn("Missing final infercnv results")
+    next
+  }
+
+  # Fix cell barcodes
+  new_samp <- samp %in% c("Ru1360d", "Ru1521b")
+
+  if (!new_samp) {
+    # Fix the barcodes
+    colnames(counts) <- metadata[match(colnames(counts), metadata$orig_barcode), "cell_id"]
+  }
+
+  sce <- SingleCellExperiment(list("counts" = counts), colData = metadata[colnames(counts), ], rowRanges = makeGRangesFromDataFrame(gene_order[rownames(counts), ], keep.extra.columns = T))
+
+  # Remove control cells
+  sce <- sce[, sce$patient == samp]
+
+  sce_rb <- rebin_sce(sce = sce, assays = "counts", new_bins = bins, ncores = 8)
+
+  saveRDS(sce_rb, file = sce_rb_f)
+}
+```
+
+## Merge
+
+```{r}
+sce_list_rb <- lapply(X = dir(results_dir, pattern = "sce_10mb_update.rds", recursive = T, full.names = T), FUN = readRDS)
+
+common_bins <- Reduce(intersect, lapply(sce_list_rb, rownames))
+
+sce_list_rb <- lapply(sce_list_rb, function(x) {
+  x[common_bins]
+})
+
+# Merge into single object
+sce <- do.call(cbind, sce_list_rb)
+
+sce <- calc_cnv_score(sce)
+
+sce$cnv_score2 <- colSds(assay(sce, "counts"))
+
+# Save out
+saveRDS(sce, file = "egfr_10mb_merged_sce_update.rds")
+```

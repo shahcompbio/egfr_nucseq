@@ -1,0 +1,209 @@
+---
+title: "EGFR Infer CNV Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+execute:
+  cache: true
+---
+
+# Introduction
+
+Here we subset for suspected epithelial cells and run InferCNV
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(infercnv)
+library(anndata)
+library(reticulate)
+use_condaenv("scanpy_new")
+# library(zellkonverter)
+library(ggthemes)
+library(dittoSeq)
+library(patchwork)
+library(Matrix)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(here)
+```
+
+# InferCNV
+
+inferCNV requires:
+
+-   a raw counts matrix of single-cell RNA-Seq expression
+-   an annotations file which indicates which cells are tumor vs. normal.
+-   a gene/chromosome positions file
+
+### Gene order file
+
+Generate the gene order positional file
+
+```{r}
+#| echo: false
+overwrite <- FALSE
+attribute_type <- "gene_name"
+
+gene_order_file <- here("cnv", "infercnv", glue("gene_order_{attribute_type}.txt"))
+
+keep_chrs <- c(1:22, "X")
+
+if (!file.exists(gene_order_file) & !overwrite) {
+  # Download the script from the github repo
+  gtf_to_position_py <- "https://raw.githubusercontent.com/broadinstitute/infercnv/master/scripts/gtf_to_position_file.py"
+
+  curl::curl_download(gtf_to_position_py, destfile = "gtf_to_position_file.py")
+
+  # Select the annotation gtf used by cellranger
+  cr_gtf <- "/work/shah/reference/transcriptomes/GRCh38/genes/genes.gtf"
+
+  stopifnot("Can't find gtf" = file.exists(cr_gtf))
+
+  # Run the conversion
+  system(glue("python gtf_to_position_file.py --attribute_name {attribute_type} {cr_gtf} {gene_order_file}"))
+
+  # Load the file and reorder and remove other chrs
+  gene_order <- read.table(file = gene_order_file, header = F, sep = "\t")
+  gene_order <- gene_order[gene_order$V2 %in% keep_chrs, ] %>%
+    mutate(V2 = factor(V2, levels = keep_chrs)) %>%
+    arrange(V2, V3)
+  write.table(gene_order, file = gene_order_file, quote = F, sep = "\t", col.names = F, row.names = F)
+} else {
+  message(glue("{gene_order_file} already exists!"))
+}
+```
+
+### Load counts
+
+```{r}
+counts <- Seurat::Read10X_h5(here("data", "h5_files", "egfr_raw_counts.h5"))
+
+metadata <- read.table(here("data", "h5_files", "raw_counts_cell_metadata.txt.gz"), header = T, sep = "\t", quote = "\"")
+```
+
+```{r}
+#| echo: false
+# Check for raw integer counts
+stopifnot("Must provide integer counts" = all(counts[, 1] - floor(counts[, 1]) == 0))
+```
+
+Get metadata
+
+```{r}
+lift <- read.table(file = here("azimuth", "egfr_lungref_azimuth_refmapped.txt.gz"), header = T, sep = "\t")
+
+metadata <- metadata %>%
+  left_join(lift)
+
+# Ensure consistent order
+counts <- counts[, metadata$cell_id]
+```
+
+
+### InferCNV Initial run
+
+Run setup
+
+```{r}
+# Loop over patients
+library(bsub)
+
+metadata$patient <- metadata$sample_id
+
+pt_list <- filter(metadata) %>%
+  pull(patient) %>%
+  unique() %>%
+  as.vector() %>%
+  sort()
+
+# Update metadata column for infercnv
+metadata$infercnv_meta <- with(metadata, paste(patient, predicted.ann_level_1, sep = "_"))
+rownames(metadata) <- metadata$cell_id
+
+# Save run metadata
+write.table(x = metadata, file = gzfile(here("cnv", "infercnv", "infercnv_run_metadata.txt.gz")), quote = F, col.names = T, row.names = F, sep = "\t")
+```
+
+Run InferCNV
+
+
+```{r}
+for (i in seq_along(pt_list)) {
+  pid <- pt_list[i]
+
+  out_dir <- here("cnv", "infercnv", "results_w_ctrl", pid)
+
+  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+
+  infercnv_obj_final_file <- file.path(out_dir, "run.final.infercnv_obj")
+
+  if (!file.exists(infercnv_obj_final_file)) {
+    pid_cells <- metadata[metadata$patient == pid, "cell_id"]
+
+    # Get control cells
+    set.seed(3)
+    control_cells_df <- metadata %>%
+      filter(patient != pid) %>%
+      # filter(predicted.ann_level_1 != "Epithelial") %>%
+      slice_sample(n = 5, by = c(patient, predicted.ann_level_1), replace = F) %>%
+      mutate(infercnv_meta = paste("ctrl", predicted.ann_level_1, sep = "_"))
+
+    control_cells <- control_cells_df$cell_id
+
+    run_cells <- c(control_cells, pid_cells)
+
+    ref_group_names <- control_cells_df %>%
+      pull(infercnv_meta) %>%
+      unique()
+
+    run_metadata <- rbind.data.frame(metadata[pid_cells, ], control_cells_df)
+
+    bsub_chunk(
+      name = glue("{pid}_infercnv"),
+      image = TRUE,
+      hours = 24,
+      cores = 8,
+      memory = 8,
+      working_dir = out_dir,
+      output_dir = out_dir,
+      temp_dir = out_dir,
+      code = {
+        infercnv_obj <- CreateInfercnvObject(
+          raw_counts_matrix = counts[, run_cells],
+          annotations_file = as.data.frame(run_metadata[run_cells, "infercnv_meta", drop = FALSE]),
+          delim = "\t",
+          gene_order_file = gene_order_file,
+          ref_group_names = ref_group_names
+        )
+
+        infercnv_obj <- infercnv::run(infercnv_obj,
+          cutoff = 0.1, # cutoff=1 works well for Smart-seq2, and cutoff=0.1 works well for 10x Genomics
+          out_dir = out_dir,
+          cluster_by_groups = TRUE,
+          denoise = TRUE,
+          HMM = F,
+          num_threads = 8,
+          leiden_method = "PCA",
+          leiden_resolution = 0.05,
+          no_prelim_plot = TRUE,
+          save_rds = FALSE,
+          analysis_mode = "subclusters",
+          resume_mode = TRUE
+        )
+
+        devtools::session_info()
+      }
+    )
+  } else {
+    message("Already done")
+  }
+}
+```

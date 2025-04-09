@@ -1,0 +1,473 @@
+---
+title: "Celltype Annotation"
+format: html
+---
+
+```{r setup}
+library(tidyverse)
+library(BPCells)
+library(Seurat)
+library(glue)
+library(here)
+library(patchwork)
+library(dittoSeq)
+library(ggh4x)
+options(future.globals.maxSize = 3e+09)
+library(bsub)
+devtools::load_all()
+
+
+raster.dpi <- c(1000, 1000)
+```
+
+
+## Load data
+
+```{r}
+srt_int <- readRDS(here("data", "objects", "01_integrated_sample_id_RNA.rds")) %>%
+  UpdateSeuratObject()
+```
+
+
+Sample counts
+
+```{r}
+srt_int@meta.data %>%
+  distinct(sample_id, time_point) %>%
+  count(time_point)
+
+srt_int@meta.data %>%
+  distinct(sample_id, time_point, impact_for_sample_clean) %>%
+  filter(!is.na(impact_for_sample_clean))
+```
+
+
+Create a trimmed down version with just the things we need from the integration
+
+```{r}
+counts <- open_matrix_dir(here("data", "bp_cells", "merged_counts"))
+
+counts_sub <- counts[, colnames(srt_int)]
+
+srt <- CreateSeuratObject(counts = counts_sub)
+
+srt <- NormalizeData(srt)
+
+srt <- AddMetaData(srt, srt_int@meta.data)
+
+srt[["RNA_rpca_integrated"]] <- srt_int[["RNA_rpca_integrated"]]
+srt[["RNA_umap_rpca_integrated"]] <- srt_int[["RNA_umap_rpca_integrated"]]
+
+srt@graphs <- srt_int@graphs
+
+VariableFeatures(srt) <- VariableFeatures(srt_int)
+
+Idents(srt) <- "RNA_clusters"
+```
+
+## Initial visualizations
+
+Check the UMAP
+
+```{r}
+DimPlot(srt, group.by = "RNA_clusters", pt.size = 1, label = T)
+# DimPlot(srt, group.by = "RNA_clusters_0.4", pt.size = 1, label = T)
+```
+
+
+Cell cycle scoring
+
+```{r}
+srt <- CellCycleScoring(srt, s.features = cc.genes.updated.2019$s.genes, g2m.features = cc.genes.updated.2019$g2m.genes)
+```
+
+
+Plot QC metrics over cluster umap and violin
+
+```{r, fig.width=12, fig.height=6}
+metrics <- c("nCount_RNA", "nFeature_RNA", "percent_mito", "percent_ribo", "S.Score", "G2M.Score")
+
+metrics_umap <- FeaturePlot(srt, features = metrics, order = T, pt.size = 1, label = T, min.cutoff = "q1", max.cutoff = "q99", ncol = 3)
+metrics_umap
+```
+
+
+```{r, fig.width=12, fig.height=6}
+metrics_vlnplot <- VlnPlot(srt, features = metrics, pt.size = 0)
+metrics_vlnplot
+```
+
+UMAP of clusters split out
+
+```{r, fig.width = 12, fig.height=12}
+plots <- map(levels(srt), \(x) {
+  cls_anno <- srt@meta.data[, "RNA_clusters"] == x
+
+  srt@meta.data[, glue("cls_{x}")] <- factor(ifelse(srt@meta.data[, "RNA_clusters"] == x, x, "other"))
+
+  pl <- DimPlot(srt, reduction = "RNA_umap_rpca_integrated", pt.size = 1, group.by = glue("cls_{x}"), order = "other", cols = c("black", "grey90")) +
+    theme_void() +
+    theme(panel.border = element_rect(fill = NA), legend.position = "none")
+
+  return(pl)
+})
+
+names(plots) <- levels(srt)
+
+pcomb <- wrap_plots(plots, ncol = 4)
+pcomb
+```
+
+CC phase of the clusters
+
+```{r}
+dittoBarPlot(srt, var = "Phase", group.by = "RNA_clusters")
+```
+
+
+## Subcluster 9
+Subcluster 9 and then repatch the original clusters since cluster 9 didn't clsuter out seperately
+
+```{r}
+library(harmony)
+srt_9 <- srt[, srt$RNA_clusters == 9]
+
+srt_9[["RNA"]]$counts <- as(srt_9[["RNA"]]$counts, Class = "dgCMatrix")
+srt_9[["RNA"]]$data <- as(srt_9[["RNA"]]$data, Class = "dgCMatrix")
+
+srt_9 <- FindClusters(srt_9, resolution = 0.2, cluster.name = "cls_9")
+
+cls9_markers <- FindAllMarkers(srt_9, only.pos = T, min.pct = 0.25, logfc.threshold = 0.25)
+
+cls9_markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 4, order_by = avg_log2FC)
+
+DimPlot(srt_9, group.by = "cls_9", label = T)
+
+dittoBarPlot(srt_9, group.by = "cls_9", var = "predicted.ann_level_3")
+
+round(prop.table(with(srt_9@meta.data, table(cls_9, predicted.ann_level_3)), margin = 1), digits = 2)
+
+# Reassign.
+# Cluster 0 and 1 are cycling epithelial cells
+# Cluster 2 are cycling myeloid (likely Macro and DCs)
+# Cluster 3 are cycling Lymphoid (likely B cells)
+
+VlnPlot(srt_9, group.by = "cls_9", features = c("KRT19", "MT2A", "SLC8A1", "ZEB2", "IGKC", "BACH2"))
+
+cls_9_remap_simple <- c(
+  "0" = "9a",
+  "1" = "9a",
+  "2" = "9b",
+  "3" = "9c"
+)
+
+cls_9_remap_detail <- c(
+  "0" = "Epithelial (cycling)",
+  "1" = "Epithelial (cycling)",
+  "2" = "Myeloid (cycling)",
+  "3" = "B-Cell/Plasma (cycling)"
+)
+
+srt_9@meta.data$cls9_remap_simple <- cls_9_remap_simple[match(srt_9@meta.data$cls_9, names(cls_9_remap_simple))]
+srt_9@meta.data$cls9_remap_detail <- cls_9_remap_detail[match(srt_9@meta.data$cls_9, names(cls_9_remap_detail))]
+
+# Patch the clusters
+srt <- AddMetaData(srt, metadata = srt_9@meta.data[, c("cls9_remap_simple", "cls9_remap_detail")])
+
+srt$RNA_clusters_orig <- srt$RNA_clusters
+
+srt$RNA_clusters <- as.character(srt$RNA_clusters)
+
+srt@meta.data[srt@meta.data$RNA_clusters_orig == 9, "RNA_clusters"] <- srt@meta.data[srt@meta.data$RNA_clusters_orig == 9, "cls9_remap_simple"]
+
+srt$RNA_clusters <- as.factor(srt$RNA_clusters)
+```
+
+
+
+```{r, fig.width=12, fig.height=8}
+# visualize by batch and cell type annotation
+# cell type annotations were previously added by Azimuth
+p1 <- DimPlot(srt, reduction = "RNA_umap_rpca_integrated", pt.size = 1, group.by = c("sample_id"), raster.dpi = raster.dpi) + NoLegend()
+p2 <- DimPlot(srt, reduction = "RNA_umap_rpca_integrated", pt.size = 1, group.by = c("predicted.ann_level_1"), raster.dpi = raster.dpi)
+p3 <- DimPlot(srt, reduction = "RNA_umap_rpca_integrated", pt.size = 1, group.by = c("predicted.ann_level_2"), raster.dpi = raster.dpi)
+p4 <- DimPlot(srt, reduction = "RNA_umap_rpca_integrated", pt.size = 1, group.by = c("RNA_clusters"), raster.dpi = raster.dpi, label = TRUE) + NoLegend()
+pcomb <- p1 + p2 + p3 + p4 + plot_layout(ncol = 2)
+ggsave(pcomb, filename = "plots/rpca_umap.pdf", width = 12, height = 8)
+pcomb
+```
+
+
+Zoom into 15 and 19
+
+```{r}
+srt@meta.data %>%
+  filter(RNA_clusters %in% c(15, 19)) %>%
+  ggplot(aes(x = RNA_clusters)) +
+  geom_bar(aes(fill = site_of_tissue), position = "fill") +
+  theme(legend.position = "right") +
+  scale_fill_manual(values = dittoColors()) +
+  guides(fill = guide_legend(ncol = 2))
+```
+
+
+
+```{r}
+#| message: false
+#| warning: false
+anno_cols <- grep("predicted", colnames(srt@meta.data), value = T) %>%
+  map(\(x) grep("score", x, invert = T, value = T)) %>%
+  list_c()
+
+cluster_col <- "RNA_clusters"
+
+
+walk(anno_cols, .f = function(anno_col) {
+  ct_cols <- setNames(nm = unique(srt@meta.data[[anno_col]]), object = dittoSeq::dittoColors()[1:length(unique(srt@meta.data[[anno_col]]))])
+
+  ct_cols[["Other"]] <- "Black"
+
+  ct_prop_df_list <- srt@meta.data %>%
+    filter(!is.na(.data[[cluster_col]])) %>%
+    mutate(cluster = fct_infreq(.data[[cluster_col]])) %>%
+    add_count(cluster, name = "cluster_count") %>%
+    group_by(cluster) %>%
+    mutate({{ anno_col }} := fct_lump_prop(.data[[anno_col]], prop = 0.05)) %>%
+    add_count(cluster, .data[[anno_col]], name = "cluster_ct_count") %>%
+    mutate(cluster_ct_prop = cluster_ct_count / cluster_count) %>%
+    select(cluster, cluster_ct_prop, cluster_ct_count, cluster_count, {{ anno_col }}) %>%
+    distinct() %>%
+    split(.[["cluster"]])
+
+  # x_length <- ct_prop_df_list %>%
+  #   map(nrow) %>%
+  #   list_c()
+
+  ct_prop_df_list <- ct_prop_df_list[gtools::mixedsort(names(ct_prop_df_list))]
+
+  ct_prop_plots <- ct_prop_df_list %>%
+    map(function(df) {
+      df %>%
+        ggplot(aes(x = fct_reorder(.data[[anno_col]], -cluster_ct_prop, mean), y = cluster_ct_prop)) +
+        geom_col(aes(fill = .data[[anno_col]])) +
+        facet_wrap(~ fct_inorder(cluster), scales = "free_x") +
+        theme(legend.position = "none") +
+        scale_fill_manual(values = ct_cols) +
+        guides(x = guide_axis(angle = 90)) +
+        labs(x = "Cell Type", y = "Cluster proportion")
+    })
+
+  pdf(here("01_analysis", "plots", glue("cluster_{anno_col}_prop_plots.pdf")), width = 7, height = 5, onefile = T)
+  print(ct_prop_plots)
+  dev.off()
+})
+```
+
+
+```{r, fig.width=15, fig.height=10}
+p1 <- DimPlot(srt, label = T, pt.size = 1, group.by = c("predicted.ann_level_1"), reduction = "RNA_umap_rpca_integrated", label.size = 2.5) + NoLegend()
+p2 <- DimPlot(srt, label = T, pt.size = 1, group.by = c("predicted.ann_level_2"), reduction = "RNA_umap_rpca_integrated", label.size = 2.5) + NoLegend()
+p3 <- DimPlot(srt, label = T, pt.size = 1, group.by = c("predicted.ann_level_3"), reduction = "RNA_umap_rpca_integrated", label.size = 2.5) + NoLegend()
+p4 <- DimPlot(srt, label = T, pt.size = 1, group.by = c("predicted.ann_level_4"), reduction = "RNA_umap_rpca_integrated", label.size = 2.5) + NoLegend()
+p5 <- DimPlot(srt, label = T, pt.size = 1, group.by = c("predicted.ann_finest_level"), reduction = "RNA_umap_rpca_integrated", label.size = 2.5) + NoLegend()
+p6 <- DimPlot(srt, label = T, pt.size = 1, group.by = c("RNA_clusters"), reduction = "RNA_umap_rpca_integrated", label.size = 2.5) + NoLegend()
+
+
+pcomb0 <- p1 + p2 + p3 + p4 + p5 + p6
+pcomb0
+ggsave(pcomb0, filename = "plots/rpca_liftover_plots.pdf", width = 15, height = 8)
+```
+
+## Cluster Markers
+
+Find Cluster Markers
+
+```{r}
+plan("sequential")
+Idents(srt) <- "RNA_clusters"
+
+markers_file <- here("01_analysis", "results", "rpca_cluster_markers.txt")
+
+log_dir <- here("01_analysis", "logs")
+
+# tmp_rds <- here("01_analysis", "logs", "tmp", "markers.rds")
+
+# saveRDS(srt, file = tmp_rds)
+```
+
+
+```{r}
+if (!file.exists(markers_file)) {
+  bsub_chunk(
+    name = "find_markers",
+    image = T,
+    working_dir = log_dir,
+    temp_dir = log_dir,
+    output_dir = log_dir,
+    hours = 8,
+    memory = 32,
+    cores = 4,
+    code = {
+      srt_tmp <- srt
+      srt_tmp[["RNA"]]$data <- as(srt_tmp[["RNA"]]$data, Class = "dgCMatrix")
+
+      all_markers <- FindAllMarkers(object = srt_tmp, max.cells.per.ident = 2000, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+      write.table(all_markers, file = markers_file, col.names = T, quote = F, sep = "\t")
+    }
+  )
+} else {
+  all_markers <- read.table(file = markers_file, header = TRUE, sep = "\t", quote = "\"")
+}
+```
+
+Top 4 markers per cluster
+
+```{r, fig.width=15, fig.height = 5}
+features_to_plot <- all_markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 4, order_by = avg_log2FC) %>%
+  ungroup() %>%
+  distinct(gene, .keep_all = T)
+markers <- split(features_to_plot$gene, features_to_plot$cluster)
+# names(markers) <- initial_cluster_map
+
+srt$RNA_clusters <- factor(srt$RNA_clusters, levels = gtools::mixedsort(as.character(unique(srt$RNA_clusters))))
+
+markers <- markers[levels(srt$RNA_clusters)]
+
+feature_dotplot <- DotPlot(srt, features = markers, cluster.idents = FALSE, group.by = "RNA_clusters") + guides(x = guide_axis(angle = 90))
+feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+```
+
+Custom markers
+
+```{r, fig.width=11, fig.height=5}
+custom_markers <- list(
+  "Epithelial" = c("KRT7", "PIGR", "ELF3", "CYB5A", "KRT8", "KRT19", "TACSTD2", "MUC1", "S100A14", "CXCL17"),
+  "Basal" = c("KRT5", "TP63", "S100A2", "KRT6A", "TNS4"),
+  "AT1" = c("AGER", "RTKN2", "CLIC5"),
+  "AT2" = c("SFTPC", "SFTPA1", "SFTPA2", "WIF1", "HHIP", "CA2", "ETV5"),
+  "Ciliated" = c("GSTA1", "DTHD1", "PIFO", "FOXJ1", "CCDC78"),
+  "Neuroendrocrine" = c("CHGA", "CALCA", "ASCL1", "CHGB", "GRP", "BEX1"),
+  "B-Cell" = c("MS4A1", "PAX5", "CD79A"),
+  "Plasma" = c("JCHAIN", "IGKC", "IGHA1", "IGHG1", "MZB1", "ISG20"),
+  "T-Cell" = c("IL7R", "CD3E", "CD3D"),
+  "Endothelial" = c("VWF", "FLT1"),
+  "Lymphatic EC" = c("MMRN1", "CCL21"),
+  "Mast cell" = c("KIT", "CPA3"),
+  "Fibroblast" = c("COL1A1", "DCN"),
+  "Pericyte" = c("PDGFRB", "CALD1"),
+  "Cycling cells" = c("TOP2A", "CENPF", "CENPP", "ASPM"),
+  "PDC" = c("IL3RA", "TCF4", "LTB", "GZMB", "ITM2C", "IRF8", "PLD4", "IRF7")
+)
+
+feature_dotplot <- DotPlot_fixed(srt, features = custom_markers, cluster.idents = T, group.by = "RNA_clusters") + guides(x = guide_axis(angle = 90))
+feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+```
+
+
+
+```{r}
+initial_cluster_map <- c(
+  "0" = "Epithelial (Mixed)",
+  "1" = "T-Cell",
+  "2" = "Myeloid",
+  "3" = "Epithelial (AT2-like)",
+  "4" = "Fibroblast",
+  "5" = "Epithelial 2 (Mixed)",
+  "6" = "Endothelial",
+  "7" = "B-Cell",
+  "8" = "Epithelial (AT1-like)",
+  "9a" = "Epithelial (Cycling)",
+  "9b" = "Myeloid (Cycling)",
+  "9c" = "B-Cell (Cycling)",
+  "10" = "Epithelial (Multiciliated)",
+  "11" = "B-Cell (Plasma)",
+  "12" = "Fibroblast (Pericytes)",
+  "13" = "Mast cell",
+  "14" = "Endothelial (Lymphatic)",
+  "15" = "Myeloid (Cycling) 2", # Probably some DC like cell -- site specific
+  "16" = "T-Cell (Cycling)",
+  "17" = "Dendritic cell",
+  "18" = "Neuronal?", # NRXN1, RAYL
+  "19" = "Muscle cells/Hepatocyte"
+)
+
+
+srt@meta.data$RNA_cluster_labels <- initial_cluster_map[match(srt@meta.data$RNA_clusters, names(initial_cluster_map))]
+
+
+srt$RNA_cluster_labels_coarse <- srt@meta.data %>%
+  mutate(RNA_cluster_labels_coarse = case_when(
+    grepl("Epithelial", RNA_cluster_labels) ~ "Epithelial",
+    grepl("Myeloid|Dendritic", RNA_cluster_labels) ~ "Myeloid",
+    grepl("Fibroblast", RNA_cluster_labels) ~ "Fibroblast",
+    grepl("T-Cell", RNA_cluster_labels) ~ "T-Cell",
+    grepl("B-Cell", RNA_cluster_labels) ~ "B-Cell",
+    grepl("Mast", RNA_cluster_labels) ~ "Mast Cell",
+    grepl("Endothelial", RNA_cluster_labels) ~ "Endothelial",
+    .default = "Other"
+  )) %>%
+  pull(RNA_cluster_labels_coarse)
+```
+
+
+```{r, fig.width=15, fig.height=5}
+p1 <- DimPlot(srt, group.by = "RNA_cluster_labels_coarse", pt.size = 1, cols = dittoColors(), label = F)
+p2 <- DimPlot(srt, group.by = "RNA_cluster_labels", pt.size = 1, cols = dittoColors(), label = F)
+
+p1 | p2
+```
+
+
+```{r, fig.width=13, fig.height=5}
+Idents(srt) <- "RNA_cluster_labels"
+custom_markers <- list(
+  "Epithelial" = c("KRT7", "PIGR", "ELF3", "CYB5A", "KRT8", "KRT19", "TACSTD2", "MUC1", "S100A14", "CXCL17"),
+  "Basal" = c("KRT5", "TP63", "S100A2", "KRT6A", "TNS4"),
+  "AT1" = c("AGER", "RTKN2", "CLIC5"),
+  "AT2" = c("SFTPC", "SFTPA1", "SFTPA2", "WIF1", "HHIP", "CA2", "ETV5"),
+  "Ciliated" = c("GSTA1", "DTHD1", "PIFO", "FOXJ1", "CCDC78"),
+  "Neuroendrocrine" = c("CHGA", "CALCA", "ASCL1", "CHGB", "GRP", "BEX1"),
+  "B-Cell" = c("MS4A1", "PAX5", "CD79A"),
+  "Plasma" = c("JCHAIN", "IGKC", "IGHA1", "IGHG1", "MZB1", "ISG20"),
+  "T-Cell" = c("IL7R", "CD3E", "CD3D"),
+  "Endothelial" = c("VWF", "FLT1"),
+  "Lymphatic EC" = c("MMRN1", "CCL21"),
+  "Mast cell" = c("KIT", "CPA3"),
+  "Fibroblast" = c("COL1A1", "DCN"),
+  "Pericyte" = c("PDGFRB", "CALD1"),
+  "Cycling cells" = c("TOP2A", "CENPF", "CENPP", "ASPM"),
+  "PDC" = c("IL3RA", "TCF4", "LTB", "GZMB", "ITM2C", "IRF8", "PLD4", "IRF7")
+)
+
+feature_dotplot <- DotPlot(srt, features = custom_markers, cluster.idents = T, group.by = "RNA_cluster_labels", scale.min = 0) + guides(x = guide_axis(angle = 90))
+feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+```
+
+
+```{r, fig.width=15, fig.height = 5}
+features_to_plot <- all_markers %>%
+  group_by(cluster) %>%
+  slice_max(n = 4, order_by = avg_log2FC) %>%
+  ungroup() %>%
+  distinct(gene, .keep_all = T)
+markers <- split(features_to_plot$gene, features_to_plot$cluster)
+# names(markers) <- initial_cluster_map
+
+srt$RNA_clusters <- factor(srt$RNA_clusters, levels = gtools::mixedsort(as.character(unique(srt$RNA_clusters))))
+
+markers <- markers[levels(srt$RNA_clusters)]
+
+feature_dotplot <- DotPlot_fixed(srt, features = markers, cluster.idents = FALSE, group.by = "RNA_cluster_labels") + guides(x = guide_axis(angle = 90))
+feature_dotplot + theme_classic() + theme(panel.spacing = unit(1, "mm"), strip.background.x = element_part_rect(side = "b"), panel.border = element_rect(fill = NA), strip.text.x = element_text(angle = 90, hjust = 0))
+```
+
+## Save out
+
+```{r}
+saveRDS(srt, file = here("data", "objects", "02_cell_annotations.rds"))
+```
+

@@ -1,0 +1,487 @@
+---
+title: "Preprocessing Seurat V5"
+format: html
+params:
+  project_name: 'EGFR'
+  sample_metadata_path: '/juno/work/shah/users/zatzmanm/repos/egfr/metadata/egfr_metadata.txt'
+  isabl_project: 'EGFR Lung Cancer'
+  isabl_assay: 'CELLRANGER'
+  thr_estimate_n_cells: 300
+  thr_mean_reads_per_cells: 25000
+  thr_median_genes_per_cell: 900
+  thr_median_umi_per_cell: 1000
+  thr_nFeature_RNA_min: 500
+  thr_nFeature_RNA_max: 7500
+  thr_nCount_min: 1000
+  thr_percent_mito: 20
+  thr_n_observed_cells: 300
+---
+
+```{r setup}
+library(tidyverse)
+library(BPCells)
+library(Seurat)
+library(reticulate)
+use_condaenv("scanpy_new")
+library(glue)
+library(patchwork)
+library(BiocParallel)
+library(here)
+library(scDblFinder)
+```
+
+Setup run parameters
+
+```{r}
+# Project parameters
+project_name <- params$project_name
+isabl_project <- params$isabl_project
+isabl_assay <- params$isabl_assay
+sample_metadata_path <- params$sample_metadata_path
+
+# Filter and thresholds
+thr_estimate_n_cells <- params$thr_estimate_n_cells
+thr_mean_reads_per_cells <- params$thr_mean_reads_per_cells
+thr_median_genes_per_cell <- params$thr_median_genes_per_cell
+thr_median_umi_per_cell <- params$thr_median_umi_per_cell
+thr_nFeature_RNA_min <- params$thr_nFeature_RNA_min
+thr_nFeature_RNA_max <- params$thr_nFeature_RNA_max
+thr_percent_mito <- params$thr_percent_mito
+thr_n_observed_cells <- params$thr_n_observed_cells
+thr_nCount_min <- params$thr_nCount_min
+```
+
+
+Get all the raw data h5 locations
+
+```{python}
+import os
+import isabl_utils
+
+file_loc = isabl_utils.get_paths(
+    r.isabl_assay, r.isabl_project, details=True
+)
+file_loc = file_loc[file_loc["file_type"] == "filtered_matrices"].reset_index()
+
+file_loc["target_experiment"] = file_loc["target_experiment"].str[0]
+file_loc["target_sample"] = file_loc["target_sample"].str[0]
+```
+
+Process file paths in R
+
+```{r}
+file_loc <- py$file_loc
+
+file_loc$sample_id <- str_to_title(file_loc$target_sample)
+
+file_loc$h5_file <- paste0(file_loc$path, ".h5")
+
+file_loc$metrics <- file.path(dirname(file_loc$path), "metrics_summary.csv")
+```
+
+## Preliminary QC
+
+Pull the 10X provided metrics and perform per sample checks
+
+```{r}
+string_to_numeric <- function(x) {
+  as.numeric(gsub("%|,", "", x))
+}
+
+metrics_df <- lapply(file_loc$metrics, read.csv) %>%
+  do.call("rbind", .) %>%
+  janitor::clean_names() %>%
+  mutate_if(is.character, string_to_numeric)
+
+metrics_df <- cbind("sample_id" = file_loc$sample_id, metrics_df)
+
+
+metrics_df <- metrics_df %>%
+  mutate(
+    estimated_number_of_cells_qc = estimated_number_of_cells >= thr_estimate_n_cells,
+    mean_reads_per_cell_qc = mean_reads_per_cell >= thr_mean_reads_per_cells,
+    median_genes_per_cell_qc = median_genes_per_cell >= thr_median_genes_per_cell,
+    median_umi_counts_per_cell_qc = median_umi_counts_per_cell >= thr_median_umi_per_cell
+  )
+
+qc_cols <- c(
+  "estimated_number_of_cells_qc", "mean_reads_per_cell_qc",
+  "median_genes_per_cell_qc", "median_umi_counts_per_cell_qc"
+)
+
+metrics_df$status_flag <- "SAMPLE:FAILURE"
+metrics_df[metrics_df$sequencing_saturation <= 70, "status_flag"] <- "SAMPLE:FIXABLE"
+metrics_df[apply(metrics_df[, qc_cols], 1, FUN = all), "status_flag"] <- "SAMPLE:SUCCESS"
+```
+
+## Load and Merge Metadata
+
+```{r}
+metadata <- read.table(sample_metadata_path, header = T, sep = "\t", quote = "\"")
+
+
+metadata <- left_join(metadata, file_loc[, c("sample_id", "target_sample", "individual", "path", "h5_file", "metrics")], by = c("sample_id" = "sample_id")) %>%
+  left_join(metrics_df) %>%
+  mutate(sample_id = str_to_title(gsub("Av-1517_", "", sample_id)))
+
+rownames(metadata) <- metadata$sample_id
+```
+
+## Loop and load counts
+
+Also perform doublet detection for each sample
+
+```{r}
+bp_dir <- "/juno/work/shah/users/zatzmanm/repos/egfr/data/bp_cells"
+
+set.seed(3)
+doublet_dir <- here("doublet_calls")
+
+dir.create(doublet_dir, showWarnings = F, recursive = T)
+
+data_list <- c()
+# metadata_list <- c()
+
+gene_names <- c()
+
+for (i in 1:nrow(metadata)) {
+  path <- metadata$h5_file[i]
+
+  sample_name <- str_to_title(metadata$sample_id[i])
+
+  logger::log_info("{i} of {nrow(file_loc)}: {sample_name}")
+
+  samp_bp_dir <- file.path(bp_dir, "raw", metadata$sample_id[i])
+
+  doub_file <- glue("{doublet_dir}/{sample_name}_scdbl_finder_results.txt.gz")
+
+  if (!file.exists(doub_file)) {
+    logger::log_info("Performing Doublet Detection")
+    # Perform doublet detection
+    sce <- DropletUtils::read10xCounts(path)
+    sce <- scDblFinder(sce)
+
+    doubs <- as.data.frame(colData(sce)[, c("Barcode", grep("scDbl", colnames(colData(sce)), value = T))]) %>%
+      mutate(Sample = sample_name, .before = "Barcode")
+    write.table(doubs, file = gzfile(doub_file), row.names = F, col.names = T, sep = "\t", quote = F)
+    logger::log_success("Doublet detection completed\nOutput written to {doub_file}")
+  } else {
+    logger::log_info("Doublet detection already completed: {doub_file}")
+  }
+
+
+
+  # Check if sample is already imported
+  if (!file.exists(samp_bp_dir)) {
+    system(glue("cp {path} . && chmod 770 filtered_feature_bc_matrix.h5"))
+
+    data <- open_matrix_10x_hdf5("filtered_feature_bc_matrix.h5")
+
+    write_matrix_dir(
+      mat = data,
+      dir = samp_bp_dir,
+      overwrite = TRUE
+    )
+
+    system("rm filtered_feature_bc_matrix.h5")
+  }
+
+
+  mat <- open_matrix_dir(samp_bp_dir)
+
+  # Grab gene names from the first iteration
+  if (i == 1) {
+    gene_names <- read.table(file = gsub(".h5", "/features.tsv.gz", path), header = F, row.names = 1)
+  }
+
+  colnames(mat) <- paste0(colnames(mat), "_", sample_name)
+
+  rownames(mat) <- gene_names[rownames(mat), "V2"]
+
+  # sample_metadata <- metadata[rep(sample_name, dim(mat)[2]),]
+
+  data_list[[i]] <- mat
+  # metadata_list[[i]] <- sample_metadata
+}
+
+names(data_list) <- metadata$sample_id
+
+stopifnot(all(metadata$sample_id %in% names(data_list)))
+
+# Ensure correct ordering
+metadata <- metadata[names(data_list), ]
+```
+
+Load, merge and bind doublets
+
+```{r}
+doublets_merged <- map(dir(doublet_dir, pattern = "*results.txt.gz$", full.names = T), read.table, header = T, sep = "\t") %>%
+  list_c() %>%
+  mutate(cell_id = paste(Barcode, Sample, sep = "_"))
+write.table(x = doublets_merged, file = gzfile(glue("{doublet_dir}/doublets_merged.txt.gz")), col.names = T, row.names = F, quote = F, sep = "\t")
+```
+
+## Create Seurat Object
+
+```{r}
+merged_object <- CreateSeuratObject(counts = data_list)
+
+# merged_object <- JoinLayers(merged_object)
+
+# Merge metadata
+merged_object$sample_id <- str_split(pattern = "_", colnames(merged_object), simplify = TRUE)[, 2]
+merged_object$cell_id <- colnames(merged_object)
+merged_object@meta.data <- left_join(merged_object@meta.data, metadata)
+
+# Merge doublet calls
+merged_object@meta.data <- left_join(merged_object@meta.data, doublets_merged)
+
+rownames(merged_object@meta.data) <- merged_object$cell_id
+```
+
+
+## Per Cell QC
+
+```{r}
+# Calculating mitochondrial content
+merged_object[["percent_mito"]] <-
+  PercentageFeatureSet(merged_object, pattern = "^MT-")
+
+# Calculate ribosomal content
+merged_object[["percent_ribo"]] <-
+  PercentageFeatureSet(merged_object, pattern = "^RPS|^RPL")
+```
+
+
+Flag failing cells
+
+```{r}
+merged_object@meta.data <- merged_object@meta.data %>%
+  mutate(
+    nCount_RNA_qc = ifelse(nCount_RNA >= thr_nCount_min, TRUE, FALSE),
+    nFeature_min_qc = ifelse(nFeature_RNA >= thr_nFeature_RNA_min, TRUE, FALSE),
+    nFeature_max_qc = ifelse(nFeature_RNA <= thr_nFeature_RNA_max, TRUE, FALSE),
+    percent_mito_qc = ifelse(percent_mito <= thr_percent_mito, TRUE, FALSE)
+  )
+
+cell_qc_cols <- c("nCount_RNA_qc", "nFeature_min_qc", "nFeature_max_qc", "percent_mito_qc")
+
+qc_cols <- c(
+  "estimated_number_of_cells_qc", "mean_reads_per_cell_qc", "median_genes_per_cell_qc",
+  "median_umi_counts_per_cell_qc", "n_observed_cells_qc"
+)
+
+merged_object$cell_pass <- apply(merged_object@meta.data[, c(cell_qc_cols)], 1, FUN = all)
+
+# Calculate number of cells post filtering per sample and recheck the threshold
+n_obs <- merged_object@meta.data %>%
+  group_by(sample_id) %>%
+  summarize(n_observed_cells = sum(cell_pass))
+
+metadata <- metadata %>%
+  left_join(n_obs) %>%
+  mutate(n_observed_cells_qc = n_observed_cells >= thr_n_observed_cells)
+
+# Flag samples that now fail due to not enough quality cells
+metadata$status_flag_post_cellqc <- NA
+
+metadata$status_flag_post_cellqc[metadata$status_flag == "SAMPLE:SUCCESS" & metadata$n_observed_cells_qc] <- "CELL:PASS"
+metadata$status_flag_post_cellqc[metadata$status_flag == "SAMPLE:SUCCESS" & !metadata$n_observed_cells_qc] <- "CELL:FAIL"
+```
+
+
+
+### Plots
+
+#### Plot per sample QC summary
+
+```{r}
+#| message: false
+qc_plots <- lapply(colnames(metrics_df[, 2:ncol(metrics_df)]), FUN = function(cname) {
+  ggplot(metrics_df, aes(x = sample_id, y = metrics_df[, cname], fill = status_flag)) +
+    geom_col() +
+    guides(x = guide_axis(angle = 90)) +
+    labs(x = "Sample", y = cname) +
+    scale_fill_manual(values = c("red", "orange", "blue"))
+})
+
+txt <- glue("Sample QC parameters:
+
+\tnCount_RNA >= {thr_nCount_min}
+\testimated_number_of_cells >= {thr_estimate_n_cells}
+\tmean_reads_per_cell >= {thr_mean_reads_per_cells}
+\tmedian_genes_per_cell >= {thr_median_genes_per_cell}
+\tmedian_umi_counts_per_cell = {thr_median_umi_per_cell}
+
+Sample success: passing all four thresholds.
+
+Sample fixable if at least one fail but 'sequencing_saturation' <= 70")
+
+# Plot summarizing the key thresholds
+p1 <- metadata %>%
+  select(sample_id, all_of(qc_cols), status_flag) %>%
+  pivot_longer(cols = c(all_of(qc_cols)), names_to = "Metric", values_to = "QC_pass") %>%
+  ggplot(aes(y = Metric, x = sample_id)) +
+  geom_tile(aes(fill = QC_pass), color = "white", lwd = 0.5, linetype = 1) +
+  scale_fill_manual(values = c("red", "blue")) +
+  coord_fixed() +
+  guides(x = guide_axis(angle = 90))
+
+p1a <- metadata %>%
+  select(sample_id, all_of(qc_cols), status_flag) %>%
+  pivot_longer(cols = all_of(qc_cols), names_to = "Metric", values_to = "QC_pass") %>%
+  ggplot(aes(x = Metric)) +
+  geom_bar(aes(fill = QC_pass)) +
+  scale_fill_manual(values = c("red", "blue")) +
+  guides(x = guide_axis(angle = 90))
+
+p2 <- metadata %>%
+  ggplot(aes(y = as.factor("status_flag"), x = sample_id)) +
+  geom_tile(aes(fill = status_flag), color = "white", lwd = 0.5, linetype = 1) +
+  scale_fill_manual(values = c("red", "orange", "blue")) +
+  coord_fixed() +
+  guides(x = guide_axis(angle = 90)) +
+  labs(y = NULL, x = NULL)
+
+p2a <- metadata %>%
+  ggplot(aes(x = as.factor("status_flag"))) +
+  geom_bar(aes(fill = status_flag)) +
+  scale_fill_manual(values = c("red", "orange", "blue")) +
+  guides(x = guide_axis(angle = 90)) +
+  labs(y = NULL, x = NULL)
+
+qc_summary_plot <- (p2 + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())) / p1 + plot_layout(guides = "collect") + plot_annotation(title = "Sample QC Summary", theme = theme(plot.title = element_text(hjust = 0.5)))
+```
+
+#### Per Cell QC Plots
+
+```{r}
+mito_plot <- merged_object@meta.data %>%
+  ggplot(aes(x = fct_reorder(sample_id, percent_mito, median), y = percent_mito, fill = status_flag)) +
+  geom_violin(scale = "width") +
+  geom_hline(yintercept = thr_percent_mito, linetype = "dashed", alpha = 0.75, color = "red") +
+  guides(x = guide_axis(angle = 90)) +
+  scale_fill_manual(values = c("red", "orange", "blue")) +
+  labs(x = "Sample", title = "Mitochondrial percentage", subtitle = glue("Threshold: {thr_percent_mito}"))
+
+ribo_plot <- merged_object@meta.data %>%
+  ggplot(aes(x = fct_reorder(sample_id, percent_ribo, median), y = percent_ribo, fill = status_flag)) +
+  geom_violin(scale = "width") +
+  guides(x = guide_axis(angle = 90)) +
+  scale_fill_manual(values = c("red", "orange", "blue")) +
+  labs(x = "Sample", title = "Ribosomal percentage", subtitle = glue("Threshold: NA"))
+
+nCount_rna_plot <- merged_object@meta.data %>%
+  ggplot(aes(x = fct_reorder(sample_id, nCount_RNA, median), y = nCount_RNA, fill = status_flag)) +
+  geom_violin(scale = "width") +
+  geom_hline(yintercept = thr_nCount_min, linetype = "dashed", color = "red") +
+  guides(x = guide_axis(angle = 90)) +
+  scale_fill_manual(values = c("red", "orange", "blue")) +
+  labs(x = "Sample", title = "Number of UMIs detected", subtitle = glue("Min threshold: {thr_nCount_min}")) +
+  scale_y_log10()
+
+nCount_min_barplot <- merged_object@meta.data %>%
+  ggplot(aes(x = fct_reorder(sample_id, nCount_RNA, median))) +
+  geom_bar(aes(fill = nCount_RNA_qc), position = "fill") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(y = "proportion")
+
+nFeature_plot <- merged_object@meta.data %>%
+  ggplot(aes(x = fct_reorder(sample_id, nFeature_RNA, median), y = nFeature_RNA, fill = status_flag)) +
+  geom_violin(scale = "width") +
+  geom_hline(yintercept = thr_nFeature_RNA_min, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = thr_nFeature_RNA_max, linetype = "dashed", color = "red") +
+  guides(x = guide_axis(angle = 90)) +
+  scale_fill_manual(values = c("red", "orange", "blue")) +
+  labs(x = "Sample", title = "Number of genes detected", subtitle = glue("Min threshold: {thr_nFeature_RNA_min}\nMax threshold: {thr_nFeature_RNA_max}"))
+
+nfeature_min_barplot <- merged_object@meta.data %>%
+  ggplot(aes(x = fct_reorder(sample_id, nFeature_RNA, median))) +
+  geom_bar(aes(fill = nFeature_min_qc), position = "fill") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(y = "proportion")
+
+nfeature_max_barplot <- merged_object@meta.data %>%
+  ggplot(aes(x = fct_reorder(sample_id, nFeature_RNA, median))) +
+  geom_bar(aes(fill = nFeature_max_qc), position = "fill") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(y = "proportion")
+
+percent_mito_barplot <- merged_object@meta.data %>%
+  ggplot(aes(x = fct_reorder(sample_id, percent_mito, median))) +
+  geom_bar(aes(fill = percent_mito_qc), position = "fill") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(y = "proportion")
+
+cell_doublet_barplot <- merged_object@meta.data %>%
+  ggplot(aes(x = fct_reorder(sample_id, percent_mito, median))) +
+  geom_bar(aes(fill = scDblFinder.class), position = "fill") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(y = "proportion")
+
+cell_pass_barplot <- merged_object@meta.data %>%
+  ggplot(aes(x = fct_reorder(sample_id, percent_mito, median))) +
+  geom_bar(aes(fill = cell_pass), position = "fill") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(y = "proportion")
+```
+
+
+```{r}
+#| echo: false
+pdf(here("00_preprocessing", "plots", glue("{params$project_name}_sample_qc_plots.pdf")), onefile = T, width = 13, height = 5)
+plot.new()
+text(x = .5, y = .5, txt)
+qc_summary_plot
+p1a + p2a
+print(qc_plots)
+mito_plot
+percent_mito_barplot
+ribo_plot
+nCount_rna_plot
+nCount_min_barplot
+nFeature_plot
+nfeature_max_barplot
+nfeature_min_barplot
+cell_doublet_barplot
+cell_pass_barplot
+dev.off()
+```
+
+
+## Save objects
+
+### Post QC sample metadata
+
+```{r}
+write.table(x = metadata, file = here("metadata", glue("{project_name}_sample_metadata_postqc.txt")), col.names = TRUE, row.names = FALSE, quote = F, sep = "\t")
+```
+
+
+Save all the components in a 10x style folder
+
+```{r}
+merged_layers <- JoinLayers(merged_object)
+
+counts <- as(merged_layers[["RNA"]]$counts, Class = "dgCMatrix")
+
+DropletUtils::write10xCounts(here("data", "h5_files", "egfr_raw_counts.h5"), x = counts, version = "3", overwrite = T)
+
+write.table(x = merged_layers@meta.data, file = gzfile(here("data", "h5_files", "raw_counts_cell_metadata.txt.gz")), col.names = T, sep = "\t", row.names = F, quote = F)
+```
+
+
+Save the object with merged layers in seurat v5 format
+
+```{r}
+# dir.create(here("data", "bp_cells", "merged_counts"), showWarnings = F, recursive = T)
+
+write_matrix_dir(mat = merged_layers[["RNA"]]$counts, dir = here("data", "bp_cells", "merged_counts"))
+
+merged_layers[["RNA"]]$counts <- open_matrix_dir(here("data", "bp_cells", "merged_counts"))
+
+saveRDS(
+  object = merged_layers,
+  file = here("data", "objects", "00_egfr_raw.rds")
+)
+```

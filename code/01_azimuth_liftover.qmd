@@ -1,0 +1,91 @@
+---
+title: "Azimuth EGFR Liftover"
+author: "Matthew Zatzman"
+---
+
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(Seurat)
+library(Azimuth)
+library(SeuratData)
+library(patchwork)
+library(bsub)
+library(here)
+```
+
+
+```{r}
+srt <- readRDS(here("data", "objects", "00_egfr_raw.rds"))
+```
+
+Run Azimuth
+
+```{r}
+# To see available refs
+available_data <- AvailableData()
+available_data[grep("Azimuth", available_data[, 3]), 1:3]
+```
+
+
+```{r}
+outdir <- here("azimuth")
+
+bsub_chunk(
+  name = "egfr_liftover",
+  hours = 4,
+  memory = 32,
+  cores = 4,
+  image = TRUE,
+  temp_dir = file.path(outdir, "logs"),
+  output_dir = file.path(outdir, "logs"),
+  working_dir = file.path(outdir, "logs"),
+  code = {
+    # Run liftover
+    srt_int <- RunAzimuth(srt, reference = "lungref")
+
+
+    # Save seurat object
+    saveRDS(srt_int, file.path(outdir, "egfr_integrated.rds"))
+
+    p1a <- DimPlot(srt_int, group.by = "predicted.ann_level_1", label = TRUE, label.size = 3, pt.size = 1) + NoLegend()
+    p1b <- VlnPlot(srt_int, features = "predicted.ann_level_1.score", group.by = "predicted.ann_level_1", pt.size = 0) + NoLegend()
+    p2a <- DimPlot(srt_int, group.by = "predicted.ann_level_2", label = TRUE, label.size = 3, pt.size = 1) + NoLegend()
+    p2b <- VlnPlot(srt_int, features = "predicted.ann_level_2.score", group.by = "predicted.ann_level_2", pt.size = 0) + NoLegend()
+
+    p3a <- DimPlot(srt_int, group.by = "predicted.ann_level_3", label = TRUE, label.size = 3, pt.size = 1) + NoLegend()
+    p3b <- VlnPlot(srt_int, features = "predicted.ann_level_3.score", group.by = "predicted.ann_level_3", pt.size = 0) + NoLegend()
+
+    p4a <- DimPlot(srt_int, group.by = "predicted.ann_level_4", label = TRUE, label.size = 3, pt.size = 1) + NoLegend()
+    p4b <- VlnPlot(srt_int, features = "predicted.ann_level_4.score", group.by = "predicted.ann_level_4", pt.size = 0) + NoLegend()
+
+    p5a <- DimPlot(srt_int, group.by = "predicted.ann_level_5", label = TRUE, label.size = 3, pt.size = 1) + NoLegend()
+    p5b <- VlnPlot(srt_int, features = "predicted.ann_level_5.score", group.by = "predicted.ann_level_5", pt.size = 0) + NoLegend()
+
+
+    p6a <- DimPlot(srt_int, group.by = "predicted.ann_finest_level", label = TRUE, label.size = 3, pt.size = 1) + NoLegend()
+    p6b <- VlnPlot(srt_int, features = "predicted.ann_finest_level.score", group.by = "predicted.ann_finest_level", pt.size = 0) + NoLegend()
+
+    # Grab all plots
+    p_list <- mget(ls(pattern = "p.[ab]"))
+
+    # pcomb <- wrap_plots(p_list, ncol = 2)
+
+    pdf(file.path(outdir, "plots/liftover.pdf"), width = 12, height = 8, onefile = TRUE)
+    print(p_list)
+    dev.off()
+
+
+    # Write out metadata
+    srt_int@meta.data %>%
+      as.data.frame() %>%
+      select(all_of(c("cell_id", grep("predicted", colnames(srt_int@meta.data), value = T), "mapping.score"))) %>%
+      write.table(file = gzfile(file.path(outdir, "egfr_lungref_azimuth_refmapped.txt.gz")), quote = F, sep = "\t", row.names = F, col.names = T)
+
+
+    devtools::session_info()
+  }
+)
+```
+

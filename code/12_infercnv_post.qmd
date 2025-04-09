@@ -1,0 +1,314 @@
+---
+title: "EGFR InferCNV Downstream"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+execute:
+  cache: false
+---
+
+```{r setup}
+#| output: false
+library(tidyverse)
+# library(zellkonverter)
+library(ggthemes)
+library(dittoSeq)
+library(patchwork)
+library(anndata)
+library(Matrix)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+devtools::load_all("~/work/repos/scatools")
+library(here)
+```
+
+
+```{r}
+sce <- readRDS(here("data", "egfr_10mb_merged_sce_update.rds"))
+```
+
+```{r}
+sce_list <- lapply(gtools::mixedsort(unique(sce$patient)), function(x) {
+  sc <- sce[, colData(sce)$patient == x]
+})
+rm(sce)
+```
+
+Load Cell annotations
+
+```{r}
+cell_anno <- readRDS(here("data", "objects", "02_cell_annotations.rds"))@meta.data
+```
+
+
+Pull IMPACT Segments
+
+```{r}
+impact <- readRDS(here("results", "impact_data.rds"))
+segments <- impact$segments
+
+# Patients with updated impact info
+replot <- c(
+  "P-0012602", "P-0050218", "P-0057196", "P-0059463", "P-0061460",
+  "P-0061840", "P-0063245", "P-0064502", "P-0065534", "P-0074288"
+)
+
+segments$sample_id <- janitor::make_clean_names(segments$dmp_pid, case = "all_caps", allow_dupes = TRUE)
+
+segments <- split(segments, segments$sample_id)
+```
+
+
+Metadata
+
+```{r}
+metadata <- read.table(file = "/data1/shahs3/users/zatzmanm/work/repos/egfr/metadata/metadata_update_jul_2024.txt", header = T, sep = "\t", quote = "\"")
+
+replot_samps <- metadata$sample_id[metadata$dmp_id %in% replot]
+```
+
+
+## Run per pt
+
+Run per patient
+
+```{r}
+overwrite <- T
+pt_size <- 1
+alpha <- 1
+
+for (i in seq_along(sce_list)) {
+  sc <- sce_list[[i]]
+
+  pid <- unique(sc$patient)
+
+  patient_id <- janitor::make_clean_names(unique(sc$individual), case = "all_caps", allow_dupes = TRUE)
+
+  outdir <- here("cnv", "infercnv", glue("objects/{pid}"))
+
+  plotdir <- here("cnv", "infercnv", "plots")
+
+  dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+  pid_segments <- segments[which(grepl(patient_id, names(segments)))]
+
+  if (length(pid_segments) == 0) {
+    logger::log_info("No segment data")
+    pid_segments <- NULL
+  }
+
+  final_out <- file.path(outdir, glue("{pid}_clustered_sce.rds"))
+  if (file.exists(final_out) & !overwrite) {
+    message("Already done")
+  } else {
+    bsub_chunk(
+      name = glue("{pid}_inferpp"),
+      enforce = TRUE,
+      image = TRUE,
+      working_dir = outdir,
+      temp_dir = outdir,
+      output_dir = outdir,
+      hours = 2,
+      memory = 16,
+      cores = 4,
+      code = {
+        devtools::load_all("~/repos/scatools")
+        sc <- cluster_seurat(sc, assay_name = "counts", algorithm = "leiden", umap.metric = "euclidean", annoy.metric = "euclidean", resolution = 0.3, suffix = "_patient")
+        # sc <- cluster_seurat(sc, assay_name = "counts", algorithm = 1, umap.metric = "euclidean", annoy.metric = "euclidean", resolution = 0.3, suffix = "_patient")
+
+        if (!is.null(pid_segments)) {
+          logger::log_info("Processing IMPACT segment data")
+
+          means <- lapply(seq_along(pid_segments), FUN = function(j) {
+            sample_id <- names(pid_segments)[j]
+            segs <- pid_segments[[j]]
+
+            segs[[sample_id]] <- segs$seg.mean
+
+            y <- makeGRangesFromDataFrame(segs, keep.extra.columns = T)
+
+            mcols(integrate_segments(x = rowRanges(sc), y = y, granges_signal_colname = sample_id, drop_na = FALSE))[[sample_id]]
+          })
+
+          names(means) <- names(pid_segments)
+          means <- as.data.frame(means)
+
+
+          mcols(rowRanges(sc)) <- cbind(mcols(rowRanges(sc)), means)
+        }
+
+        sc$clusters_patient <- fct_infreq(sc$clusters_patient)
+
+        p1 <- dittoDimPlot(sc, var = "clusters_patient", size = pt_size, opacity = alpha, reduction.use = "UMAP_patient")
+        p2 <- dittoDimPlot(sc, var = "predicted.ann_level_1", size = pt_size, opacity = alpha, reduction.use = "UMAP_patient")
+        p3 <- dittoDimPlot(sc, var = "predicted.ann_level_2", size = pt_size, opacity = alpha, reduction.use = "UMAP_patient") +
+          scale_color_ptol()
+        p4 <- dittoDimPlot(sc, var = "cnv_score2", size = pt_size, opacity = alpha, reduction.use = "UMAP_patient") + scale_color_viridis_c(limits = c(0, 0.05), oob = scales::squish)
+
+        cnv_score_plot <- colData(sc) %>%
+          as.data.frame() %>%
+          ggplot(aes_string(x = "clusters_patient", y = "cnv_score2")) +
+          geom_violin(scale = "width", aes_string(fill = "clusters_patient")) +
+          geom_boxplot(width = 0.1, outlier.shape = NA) +
+          scale_fill_manual(values = dittoColors())
+
+        cluster_mix_plot1 <- colData(sc) %>%
+          as.data.frame() %>%
+          ggplot(aes_string(x = "clusters_patient")) +
+          geom_bar(aes_string(fill = "predicted.ann_level_1"), position = "fill") +
+          scale_fill_ptol() +
+          labs(x = "Cluster", y = "Cell proportion", fill = "Cell type")
+
+        cluster_mix_plot2 <- colData(sc) %>%
+          as.data.frame() %>%
+          ggplot(aes_string(x = "clusters_patient")) +
+          geom_bar(aes_string(fill = "predicted.ann_level_1")) +
+          scale_fill_ptol() +
+          labs(x = "Cluster", y = "Cell count", fill = "Cell type")
+        cluster_mix_plot <- cluster_mix_plot1 / cluster_mix_plot2 + plot_layout(guides = "collect")
+
+        cell_anno_df <- colData(sc) %>%
+          as.data.frame() %>%
+          inner_join(cell_anno[, c("cell_id", "RNA_cluster_labels", "RNA_cluster_labels_coarse")])
+
+        cluster_mix_plot2a <- cell_anno_df %>%
+          ggplot(aes_string(x = "clusters_patient")) +
+          geom_bar(aes_string(fill = "RNA_cluster_labels"), position = "fill") +
+          scale_fill_manual(values = dittoColors()) +
+          labs(x = "Cluster", y = "Cell proportion", fill = "Cell type")
+
+        cluster_mix_plot2b <- cell_anno_df %>%
+          ggplot(aes_string(x = "clusters_patient")) +
+          geom_bar(aes_string(fill = "RNA_cluster_labels")) +
+          scale_fill_manual(values = dittoColors()) +
+          labs(x = "Cluster", y = "Cell count", fill = "Cell type")
+        cluster_mix_plot2 <- cluster_mix_plot2a / cluster_mix_plot2b + plot_layout(guides = "collect")
+
+        cluster_mix_plot3a <- cell_anno_df %>%
+          ggplot(aes_string(x = "clusters_patient")) +
+          geom_bar(aes_string(fill = "RNA_cluster_labels_coarse"), position = "fill") +
+          scale_fill_manual(values = dittoColors()) +
+          labs(x = "Cluster", y = "Cell proportion", fill = "Cell type")
+
+        cluster_mix_plot3b <- cell_anno_df %>%
+          ggplot(aes_string(x = "clusters_patient")) +
+          geom_bar(aes_string(fill = "RNA_cluster_labels_coarse")) +
+          scale_fill_manual(values = dittoColors()) +
+          labs(x = "Cluster", y = "Cell count", fill = "Cell type")
+        cluster_mix_plot3 <- cluster_mix_plot3a / cluster_mix_plot3b + plot_layout(guides = "collect")
+
+
+        ht <- cnaHeatmap(sc, assay_name = "counts", clone_name = "clusters_patient", col_fun = logr_col_fun(breaks = c(-0.05, -0.01, 0.01, 0.05), colors = c("blue", "white", "white", "red")), log2 = T, col_clones = dittoColors(), legend_name = "log2ratio", bulk_cn_col = names(pid_segments)[1])
+
+        clone_ht <- cloneCnaHeatmap(sc, assay_name = "counts", clone_name = "clusters_patient", col_fun = logr_col_fun(breaks = c(-0.05, -0.01, 0.01, 0.05), colors = c("blue", "white", "white", "red")), log2 = T, col_clones = dittoColors(), legend_name = "log2ratio", bulk_cn_col = names(pid_segments)[1])
+
+        # If we have impact segments, correlate each pseudobulked clusters copy number with those segments
+        if (!is.null(pid_segments)) {
+          df <- get_assay_dat(pseudo_groups(sc, assay_name = "counts", group_var = "clusters_patient"), assay_names = "counts")
+          df$log2_counts <- log2(df$counts)
+
+          impact_corplots <- lapply(names(pid_segments), FUN = function(s) {
+            ggplot(df, aes(x = df[["log2_counts"]], y = df[[s]])) +
+              geom_point() +
+              geom_hline(yintercept = 0, linetype = "dashed") +
+              geom_vline(xintercept = 0, linetype = "dashed") +
+              geom_smooth(method = "lm") +
+              ggpubr::stat_cor() +
+              facet_wrap(~id) +
+              theme_bw() +
+              labs(x = "infercnv", y = "IMPACT", title = s)
+          })
+        } else {
+          impact_corplots <- NULL
+        }
+
+
+        umap_plot <- wrap_plots(list(p1, p2, p3, p4), ncol = 2) +
+          plot_annotation(
+            title = glue("Patient: {unique(sc$individual)} - {unique(sc$patient)}"),
+            subtitle = glue("Site: {unique(sc$site_of_tissue)}\nProcedure: {unique(sc$procedure_type)}\nTreatment: {unique(sc$treatment_at_time_of_sample)}")
+          )
+
+        pdf(file = glue("{plotdir}/{pid}_infercnv.pdf"), width = 14, height = 8)
+        plot(umap_plot)
+        plot(cnv_score_plot)
+        plot(cluster_mix_plot)
+        plot(cluster_mix_plot2)
+        plot(cluster_mix_plot3)
+
+        try(plot(ht))
+        plot(clone_ht)
+        if (!is.null(impact_corplots)) {
+          lapply(impact_corplots, plot)
+        }
+        dev.off()
+
+        saveRDS(sc, file = final_out)
+      }
+    )
+  }
+}
+```
+
+## Cohort wide clustering
+
+```{r}
+sce_list <- lapply(dir(here("cnv", "infercnv", "objects"), pattern = "*clustered_sce.rds", full.names = TRUE, recursive = TRUE), readRDS)
+```
+
+
+Prepare for dataset merge
+
+```{r}
+# Get and fill all column names
+common_bins <- Reduce(intersect, lapply(sce_list, rownames))
+
+all_cols <- Reduce(union, lapply(sce_list, FUN = function(x) colnames(colData(x))))
+
+sce_list <- lapply(sce_list, FUN = function(x) {
+  missing_cols <- setdiff(all_cols, colnames(colData(x)))
+  if (length(missing_cols) >= 1) {
+    colData(x)[, missing_cols] <- NA
+  }
+
+  metadata(x) <- list()
+  reducedDims(x) <- list()
+  return(x[common_bins, ])
+})
+
+sce <- do.call("cbind", sce_list)
+rm(sce_list)
+```
+
+
+```{r}
+final_out <- here("cnv", "infercnv", "egfr_10mb_merged_cohort_clustered_sce.rds")
+bsub_chunk(name = "cluster_egfr_infercnv", image = TRUE, working_dir = here("cnv", "infercnv"), temp_dir = here("cnv", "infercnv"), output_dir = here("cnv", "infercnv"), hours = 16, memory = 32, cores = 4, code = {
+  devtools::load_all("~/repos/scatools")
+  sce <- cluster_seurat(sce, assay_name = "counts", algorithm = "leiden", resolution = 0.25, annoy.metric = "euclidean", umap.metric = "euclidean", suffix = "_cohort")
+
+  saveRDS(sce, file = final_out)
+})
+```
+
+Set-up YAML file for manual annotation
+
+```{r}
+library(yaml)
+
+yml_list <- as.list(gtools::mixedsort(unique(sce$patient)))
+
+test <- lapply(yml_list, FUN = function(l) {
+  x <- list(l = list("tumor_cluster" = "NA", "confidence" = "NA"))
+  names(x) <- l
+  return(x)
+})
+
+write_yaml(test, file = here("cnv", "infercnv", "infercnv_manual_annotation_raw.yaml"))
+```

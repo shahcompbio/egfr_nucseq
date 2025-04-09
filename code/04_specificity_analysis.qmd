@@ -1,0 +1,141 @@
+---
+title: "Specificity Analysis"
+author: "Matthew Zatzman"
+---
+
+```{r setup}
+library(tidyverse)
+library(here)
+library(ggbeeswarm)
+library(ggsci)
+library(glue)
+library(patchwork)
+library(ggh4x)
+library(Seurat)
+library(dittoSeq)
+
+devtools::load_all()
+```
+
+## Load Data
+
+```{r}
+db <- load_project(epi_obj = NULL, tumor_obj = NULL)
+```
+
+Run PCA and generate graph on unintegrated data and then resave cohort object
+
+```{r}
+rds_f <- here("data", "objects", "egfr_cohort.rds")
+
+srt <- db$srt
+
+if (!file.exists(rds_f)) {
+  srt_tmp <- db$srt
+  # Densify
+  srt_tmp[["RNA"]]$counts <- as(srt_tmp[["RNA"]]$counts, Class = "dgCMatrix")
+
+  srt_tmp <- NormalizeData(srt_tmp)
+
+  srt_tmp <- FindVariableFeatures(srt_tmp)
+
+  srt_tmp <- ScaleData(srt_tmp)
+
+  srt_tmp <- RunPCA(srt_tmp)
+
+  srt_tmp <- FindNeighbors(srt_tmp, dims = 1:30, reduction = "pca", graph.name = c("RNA_nn_nb", "RNA_snn_nb"))
+
+  srt_tmp <- RunUMAP(srt_tmp, dims = 1:30, reduction = "pca", reduction.name = "umap_nb")
+
+  # Add to slots of the cohort object
+  srt[["umap_nb"]] <- srt_tmp[["umap_nb"]]
+  srt[["pca"]] <- srt_tmp[["pca"]]
+  srt[["RNA_nn_nb"]] <- srt_tmp[["RNA_nn_nb"]]
+  srt[["RNA_snn_nb"]] <- srt_tmp[["RNA_snn_nb"]]
+  srt[["umap_nb"]] <- srt_tmp[["umap_nb"]]
+
+  saveRDS(srt, file = rds_f, compress = F)
+} else {
+  srt <- readRDS(rds_f)
+}
+```
+
+
+## Cluster specificity
+
+### Unbatch corrected
+
+```{r}
+library(scatools)
+
+pt_sp_f <- here("results", "cell_type_patient_specificity.txt.gz")
+
+if (!file.exists(pt_sp_f)) {
+  df_snn_sp <- scatools::calc_snn_specificity(
+    snn_graph = srt@graphs$RNA_snn_nb,
+    cell_idents1 = srt$sample_id,
+    cell_idents2 = srt$cell_type,
+    sampling_rate = 0.25,
+    ncores = 30,
+    weighted = T
+  )
+
+  write.table(df_snn_sp, file = gzfile(pt_sp_f), quote = F, sep = "\t", row.names = F, col.names = T)
+}
+
+# Site specificity
+
+tp_sp_f <- here("results", "cell_type_timepoint_specificity.txt.gz")
+
+if (!file.exists(tp_sp_f)) {
+  df_snn_sp_tp <- scatools::calc_snn_specificity(
+    snn_graph = srt@graphs$RNA_snn_nb,
+    cell_idents1 = srt$time_point,
+    cell_idents2 = srt$cell_type,
+    sampling_rate = 0.25,
+    ncores = 30,
+    weighted = T
+  )
+
+  write.table(df_snn_sp_tp, file = gzfile(tp_sp_f), quote = F, sep = "\t", row.names = F, col.names = T)
+}
+```
+
+
+### Batch corrected
+
+```{r}
+library(scatools)
+
+pt_sp_f <- here("results", "cell_type_patient_specificity_batch.txt.gz")
+
+if (!file.exists(pt_sp_f)) {
+  df_snn_sp <- scatools::calc_snn_specificity(
+    snn_graph = srt@graphs$RNA_snn,
+    cell_idents1 = srt$sample_id,
+    cell_idents2 = srt$cell_type,
+    sampling_rate = 0.25,
+    ncores = 30,
+    weighted = T
+  )
+
+  write.table(df_snn_sp, file = gzfile(pt_sp_f), quote = F, sep = "\t", row.names = F, col.names = T)
+}
+
+# Site specificity
+
+tp_sp_f <- here("results", "cell_type_timepoint_specificity_batch.txt.gz")
+
+if (!file.exists(tp_sp_f)) {
+  df_snn_sp_tp <- scatools::calc_snn_specificity(
+    snn_graph = srt@graphs$RNA_snn,
+    cell_idents1 = srt$time_point,
+    cell_idents2 = srt$cell_type,
+    sampling_rate = 0.25,
+    ncores = 30,
+    weighted = T
+  )
+
+  write.table(df_snn_sp_tp, file = gzfile(tp_sp_f), quote = F, sep = "\t", row.names = F, col.names = T)
+}
+```

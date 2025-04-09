@@ -1,0 +1,2208 @@
+---
+title: "EGFR Tumor Cell Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+---
+
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(ggthemes)
+library(ggsci)
+library(dittoSeq)
+library(ggrepel)
+library(patchwork)
+library(Matrix)
+library(scCustomize)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(patchwork)
+library(SingleCellExperiment)
+library(ComplexHeatmap)
+# library(scuttle)
+library(Seurat)
+library(ggbeeswarm)
+library(slingshot)
+library(tradeSeq)
+# library(monocle3)
+library(here)
+
+devtools::load_all()
+
+colors <- load_colors()
+
+options(Seurat.object.assay.version = "v5")
+
+theme_set(theme_classic())
+
+symnum.args <- list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, Inf), symbols = c("p<0.0001", "p<0.001", "p<0.01", "p<0.05", "ns"))
+symnum_0.1 <- list(cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c(
+  "p<0.0001",
+  "p<0.001", "p<0.01", "p<0.05", "p<0.1", "ns"
+))
+
+symnum_0.1_star <- list(cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c(
+  "****",
+  "***", "**", "*", "^", "ns"
+))
+```
+
+# Load objects
+
+```{r}
+db <- load_project()
+
+sce_ti <- readRDS(here("data", "objects", "slingshot_sce_v2.rds"))
+```
+
+## Curves
+
+```{r}
+pseudo.paths <- slingPseudotime(sce_ti)
+head(pseudo.paths)
+# Taking the rowMeans just gives us a single pseudo-time for all cells. Cells
+# in segments that are shared across paths have similar pseudo-time values in
+# all paths anyway, so taking the rowMeans is not particularly controversial.
+sce_ti$pseudotime <- rowMeans(pseudo.paths, na.rm = TRUE)
+embedded <- embedCurves(sce_ti, "PCA_GENES")
+embedded <- slingCurves(embedded)
+
+ti_curves <- purrr::map(embedded, .f = function(l) {
+  as.data.frame(l$s[l$ord, ])
+})
+
+curves_df <- purrr::map(seq_along(ti_curves), .f = function(i) {
+  df <- ti_curves[[i]]
+  df$lineage <- i
+  return(df)
+}) %>%
+  list_rbind()
+curves_df$lineage <- factor(curves_df$lineage, levels = c(1, 2), labels = c("LUSC", "SCLC"))
+
+# Which cells are assigned to which curve
+
+sce_ti$lineage <- slingBranchID(sce_ti)
+table(sce_ti$lineage)
+```
+
+```{r}
+srt_ti <- db$srt_epi[, colnames(sce_ti)]
+srt_ti[["pca_genes"]] <- readRDS(here("data", "objects", "slingshot_pre_srt_v2.rds"))[["pca_genes"]]
+srt_ti$pseudotime <- sce_ti$pseudotime
+srt_ti$pseudotime_scaled <- standardize(srt_ti$pseudotime)
+srt_ti$lineage <- sce_ti$lineage
+srt_ti$lineage_class <- factor(srt_ti$lineage, levels = c("1", "1,2", "2"), labels = c("LUSC", "LUAD", "SCLC"))
+
+srt_ti$mcluster_merge <- sce_ti$mcluster_merge
+
+srt_ti <- update_metadata(srt_ti, db$metadata, match_by = c("sample_id"))
+
+sce_gam <- readRDS(here("data", "objects", "sce_gam_v2.rds"))
+
+trim_v <- c(0, 1)
+
+srt_ti$LUAD_s <- standardize(srt_ti$LUAD_GIRARD, trim = trim_v)
+srt_ti$LUSC_s <- standardize(srt_ti$LUSC_GIRARD, trim = trim_v)
+srt_ti$SCLC_s <- standardize(srt_ti$SCLC_CCLE, trim = trim_v)
+srt_ti$Histotime_s <- standardize(srt_ti$pseudotime, trim = c(0.01, 0.99))
+srt_ti$MAPK_s <- standardize(srt_ti$REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES, trim = trim_v)
+```
+
+
+
+```{r, fig.width=5, fig.height=4}
+# Need to loop over the paths and add each one separately.
+gg <- dittoDimPlot(sce_ti, var = "pseudotime", reduction.use = "PCA_GENES") +
+  scale_color_viridis_c(name = "pseudotime", begin = 0, end = 1, oob = scales::squish)
+
+for (df in ti_curves) {
+  gg <- gg + geom_path(arrow = arrow(angle = 30, length = unit(0.5, "lines"), ends = "last", type = "open"), data = df, aes(x = pcagenes_1, y = pcagenes_2), linewidth = 0.5, alpha = 1)
+}
+p1 <- gg + theme_classic() & theme(aspect.ratio = 1)
+p1
+```
+
+
+```{r, fig.width = 9, fig.height=4}
+p0 <- qplot(sce_ti$pseudotime, bins = 100)
+p1 <- qplot(log(sce_ti$pseudotime + 1), bins = 100)
+
+p0 | p1
+```
+
+```{r}
+colData(sce_ti)[, c("mcluster_merge", "pseudotime")] %>%
+  data.frame() %>%
+  ggplot(aes(x = mcluster_merge, y = pseudotime)) +
+  geom_violin(aes(fill = mcluster_merge), scale = "width") +
+  scale_fill_manual(values = dittoColors()) +
+  geom_hline(yintercept = 6)
+```
+
+
+## Branching point
+
+```{r}
+DimPlot_scCustom(srt_ti, reduction = "pca_genes", split.by = "lineage", group.by = "lineage")
+
+# srt_ti@
+```
+
+
+
+## Trajectory plots
+
+```{r, fig.width = 9, fig.height = 5}
+library(ggnewscale)
+
+p_list <- FeaturePlot(srt_ti, features = c("Histotime_s", "LUAD_s", "LUSC_s", "SCLC_s", "MAPK_s"), reduction = "pca_genes", raster = F, order = T, combine = F, pt.size = 0.1) %>%
+  purrr::map(., .f = function(p) {
+    p +
+      scale_color_viridis_c(option = "inferno", breaks = c(0, 1), labels = c(0, 1)) +
+      NoAxes() +
+      guides(color = guide_colorbar(keywidth = 0.4, keyheight = 3))
+  })
+
+names(p_list) <- c("Histotime", "LUAD", "LUSC", "SCLC", "Nuclear MAPK (Reactome)")
+
+p_list$Histotime <- p_list$Histotime +
+  ggnewscale::new_scale_color() +
+  geom_path(arrow = arrow(angle = 30, length = unit(0.4, "lines"), ends = "last", type = "closed"), data = curves_df, aes(group = lineage, x = pcagenes_1, y = pcagenes_2), linewidth = 2, alpha = 1, color = "black", show.legend = F) +
+  geom_path(arrow = arrow(angle = 30, length = unit(0.4, "lines"), ends = "last", type = "closed"), data = curves_df, aes(color = lineage, x = pcagenes_1, y = pcagenes_2), linewidth = 1, alpha = 1) +
+  scale_color_manual(values = colors$histology_predominant_short, name = "Lineage") +
+  guides(color = guide_legend(position = "inside", override.aes = list(linewidth = 1, geom = "line"))) +
+  theme(legend.position.inside = c(0.8, 0.5))
+
+
+p_list <- purrr::map(names(p_list), .f = function(nm) {
+  p <- p_list[[nm]] +
+    ggtitle(nm)
+  ggrastr::rasterise(p, layers = "Point", dpi = 300)
+})
+names(p_list) <- c("Histotime", "LUAD", "LUSC", "SCLC", "Nuclear MAPK (Reactome)")
+
+
+layout <- c(
+  area(t = 2, b = 3, l = 1, r = 2),
+  area(t = 1, b = 2, l = 3, r = 4),
+  area(t = 3, b = 4, l = 3, r = 4),
+  area(t = 1, b = 2, l = 5, r = 6),
+  area(t = 3, b = 4, l = 5, r = 6)
+)
+
+pcomb <- wrap_plots(p_list, design = layout)
+
+size_scale <- 1.4
+
+ggsave(pcomb, file = here("plots", "psuedotime_traj_v2.pdf"), width = 12 / size_scale, height = 8 / size_scale)
+pcomb
+```
+
+## Lineage Genes
+
+### Systematically plot all
+
+```{r}
+# A full version
+ysmooth_df_full <- predictSmooth(models = sce_gam, gene = rownames(sce_gam), nPoints = 100, tidy = TRUE) %>%
+  mutate(log_counts = log1p(yhat)) %>%
+  mutate(lineage = factor(lineage, levels = c(1, 2), labels = c("LUSC", "SCLC"))) %>%
+  group_by(gene, lineage) %>%
+  mutate(
+    pseudotime_rank = 1:n(),
+    time_scaled = standardize(pseudotime_rank)
+  ) %>%
+  ungroup() %>%
+  group_by(gene) %>%
+  mutate(
+    log_counts_scaled = scale(log_counts)[, 1],
+    log_counts_standardized = standardize(log_counts)
+  ) %>%
+  ungroup()
+```
+
+
+```{r}
+pls <- map(names(markers$epi_markers_final), .f = function(ct) {
+  glist <- markers$epi_markers_final[[ct]]
+
+  ysmooth_df_full %>%
+    dplyr::filter(gene %in% glist) %>%
+    ggplot(aes(x = time_scaled, y = log_counts_standardized, color = gene, group = gene)) +
+    labs(y = "Expression", x = "Psuedotime", linetype = "Lineage", title = ct, color = NULL) +
+    geom_line(linewidth = 1) +
+    scale_color_nejm() +
+    guides(linetype = guide_legend(override.aes = list(linewidth = 1))) +
+    scale_x_continuous(breaks = c(0, 1)) +
+    theme(
+      panel.border = element_rect(fill = NA, color = "black"),
+      strip.background = element_blank(),
+      axis.line = element_blank(),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+    ) +
+    facet_grid(. ~ lineage, scales = "free_y")
+})
+names(pls) <- names(markers$epi_markers_final)
+
+pcomb <- wrap_plots(pls, ncol = 3)
+ggsave(pcomb, file = here("plots", "histotime_all_epi_types.pdf"), width = 14, height = 10)
+```
+
+
+### Select genes
+
+```{r}
+p_list <- FeaturePlot(srt_ti, features = c("SFTPB", "SFTPC", "MAPSA", "KRT15"), reduction = "pca_genes", raster = F, order = T, combine = F, pt.size = 0.1) %>%
+  purrr::map(., .f = function(p) {
+    p +
+      scale_color_viridis_c(option = "inferno", breaks = c(0, 1), labels = c(0, 1)) +
+      NoAxes() +
+      guides(color = guide_colorbar(keywidth = 0.4, keyheight = 3))
+  })
+p_list
+```
+
+
+```{r, fig.width = 5, fig.height = 2}
+# genes_plot = c("ASCL1", "KRT19", "KRT15", "KRT16", "KRT18",
+# "SOX5", "SOX6", "SOX4", "SOX9", "FOXM1", "FOXP1")
+#
+luad_loss_genes <- c("SFTPB", "SFTPC", "SFTPD", "ETV5") # luad loss
+
+p_luad_loss <- ysmooth_df %>%
+  group_by(gene) %>%
+  mutate(log_counts_standardized = standardize(log_counts)) %>%
+  dplyr::filter(gene %in% luad_loss_genes) %>%
+  ggplot(aes(x = time_scaled, y = log_counts_standardized, color = gene, group = gene)) +
+  geom_line(linewidth = 1) +
+  labs(y = "Expression", color = "AT2 Markers", x = "Psuedotime", linetype = "Lineage") +
+  scale_color_nejm() +
+  guides(linetype = guide_legend(override.aes = list(linewidth = 1))) +
+  scale_x_continuous(breaks = c(0, 1)) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    strip.background = element_blank(),
+    axis.line = element_blank()
+  ) +
+  facet_grid(. ~ lineage, scales = "free_y")
+p_luad_loss
+```
+
+
+```{r, fig.width = 5, fig.height = 2}
+# lusc_gain_genes <- c("TP63", "KRT5", "KRT6A", "KRT6B", "KRT15", "KRT16")
+lusc_gain_genes <- c("TP63", "KRT5", "KRT15", "KRT17")
+# lusc_gain_genes <- c("KRT6A", "KRT13", "KRT14", "DSG3")
+
+
+p_lusc_gain <- ysmooth_df_full %>%
+  dplyr::filter(gene %in% lusc_gain_genes) %>%
+  mutate(gene = fct_relevel(gene, lusc_gain_genes)) %>%
+  ggplot(aes(x = time_scaled, y = log_counts_standardized, color = gene, group = gene)) +
+  geom_line(linewidth = 1) +
+  labs(y = "Expression", color = "Basal Markers", x = "Psuedotime", linetype = "Lineage") +
+  scale_color_nejm() +
+  guides(linetype = guide_legend(override.aes = list(linewidth = 1))) +
+  scale_x_continuous(breaks = c(0, 1)) +
+  facet_grid(. ~ lineage)
+p_lusc_gain
+```
+
+
+```{r, fig.width = 5, fig.height = 2}
+sclc_gain_genes <- c("ASCL1", "NCAM1", "NEUROD1", "SYP") # SCLC
+
+p_sclc_gain <- ysmooth_df_full %>%
+  dplyr::filter(gene %in% sclc_gain_genes) %>%
+  ggplot(aes(x = time_scaled, y = log_counts_standardized, color = gene, group = gene)) +
+  # geom_line(color = "white", linewidth = 2) +
+  geom_line(linewidth = 1) +
+  labs(y = "Expression", color = "NE Markers", x = "Psuedotime", linetype = "Lineage") +
+  scale_color_nejm() +
+  scale_linetype_manual(values = c("solid", "dotted")) +
+  guides(linetype = guide_legend(override.aes = list(linewidth = 1))) +
+  scale_x_continuous(breaks = c(0, 1)) +
+  # theme(axis.text = element_blank(), axis.ticks = element_blank()) +
+  facet_grid(. ~ lineage)
+p_sclc_gain
+```
+
+
+```{r, fig.width = 3.75, fig.height = 3.5}
+pcomb <- (p_luad_loss) + (p_lusc_gain + theme(strip.text.x = element_blank())) + (p_sclc_gain + theme(strip.text.x = element_blank())) + plot_layout(ncol = 1, axes = "collect", axis_titles = "collect") &
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    strip.background = element_blank(),
+    axis.line = element_blank(), plot.margin = margin(0.8, 0.5, 0.8, 0.5, "mm"),
+    legend.margin = margin()
+  ) &
+  guides(color = guide_legend(keyheight = 0.5, keywidth = 0.5)) &
+  scale_y_continuous(breaks = c(0, 1), labels = c(0, 1)) &
+  labs(x = "Histotime", y = "Scaled Expression")
+ggsave(pcomb, file = here("plots", "histotime_example_genes_v2.pdf"), width = 3.75, height = 3.5)
+pcomb
+```
+
+# Density over features
+
+## Timepoint
+
+```{r, fig.width=7, fig.height=3}
+library(ggtext)
+library(ggpointdensity)
+df <- FetchData(srt_ti, vars = c("time_point", "pcagenes_1", "pcagenes_2")) %>%
+  dplyr::rename("PC1" = "pcagenes_1", "PC2" = "pcagenes_2")
+
+devtools::load_all()
+# Group by timepoint and calculate scaled density per group
+df <- df %>%
+  group_by(time_point) %>%
+  mutate(density = get_density(PC1, PC1, n = 500)) %>%
+  mutate(density_scaled = standardize(density))
+
+df$time_point_col <- factor(df$time_point,
+  levels = levels(df$time_point),
+  labels = glue("<b style='color:{colors$time_point[levels(df$time_point)]}'>{levels(df$time_point)}</b>")
+)
+
+
+# lab_cents <- get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated")
+
+# p <- df %>%
+#   ungroup() %>%
+#   arrange((density_scaled)) %>%
+#   ggplot(aes(x = PC1, y = PC2)) +
+#   # scattermore::geom_scattermore(data = df_raw, color = "grey50", alpha = 0.5) +
+#   # geom_point(aes(color = density_scaled), size = 0.2) +
+#   ggpointdensity::geom_pointdensity(aes(color = after_stat(..ndensity..))) +
+#   facet_wrap(~time_point_col) +
+#   scale_color_gradientn(colours = viridis::turbo(10)) +
+#   guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) +
+#   # geom_label_repel(data = get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated"), aes(x = x, y = y, label = RNA_cluster_labels_coarse), size = 3, label.padding = unit(0.1, "lines")) +
+#   # NoAxes() +
+#   # coord_cartesian(clip = "off") +
+#   theme(
+#     strip.background = element_blank(),
+#     strip.text.x = element_markdown(size = 16),
+#     aspect.ratio = 1, panel.background = element_rect(fill = NA, color = "black"),
+#     plot.title = element_text(hjust = 0.5, size = 18),
+#     axis.line = element_blank(),
+#     axis.ticks = element_blank(),
+#     axis.text = element_blank()
+#   ) +
+#   labs(x = "PC1", y = "PC2", title = NULL, color = "Density")
+# # ggsave(p, file = here("plots", "tumor_cell_density.pdf"), width = 7, height = 3)
+# p
+```
+
+# Cancer cell states over pseudotime
+
+```{r, fig.width = 3.75, fig.height = 3.25}
+p1 <- srt_ti@meta.data %>%
+  ggplot(aes(x = standardize(pseudotime), y = fct_reorder(cell_type_epi, -pseudotime, median))) +
+  # geom_violin(scale = "width") +
+  ggrastr::rasterize(geom_quasirandom(aes(color = cell_type_epi), size = 0.1, alpha = 0.5, show.legend = F), dpi = 1000) +
+  geom_pointrange(
+    pch = 21,
+    stat = "summary", fatten = 2, color = "black", fill = "white", stroke = 0.5,
+    fun.min = function(z) {
+      quantile(z, 0.25)
+    },
+    fun.max = function(z) {
+      quantile(z, 0.75)
+    },
+    fun = median, position = position_dodge(width = 0.8)
+  ) +
+  guides(x = guide_axis(cap = "upper")) +
+  scale_color_manual(values = colors$cell_type_epi) +
+  scale_x_continuous(breaks = c(0, 1)) +
+  labs(x = "Histotime", y = "Epithelial cell state") +
+  theme(plot.margin = margin(1, 0, 1, 1, "mm"))
+# ggsave(p1, file = here("plots", "histotime_epi_types_dotviolin.pdf"), width = 2.75, height = 3.25)
+
+# Distribution over the branches
+
+p2 <- srt_ti@meta.data %>%
+  ggplot(aes(y = fct_reorder(cell_type_epi, -pseudotime_scaled, median))) +
+  geom_bar(aes(fill = lineage_class), position = "fill") +
+  labs(fill = "Branch", x = "Prop.", y = NULL) +
+  scale_x_continuous(expand = c(0, 0), breaks = c(0, 1)) +
+  guides(
+    x = guide_axis(cap = "both"),
+    fill = guide_legend(keywidth = 0.4, keyheight = 0.4, override.aes = list(color = NULL))
+  ) +
+  scale_fill_manual(values = colors$histology_predominant_short) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.margin = margin(1, 1, 1, 0, "mm")
+  )
+
+
+pcomb <- p1 + p2 + plot_layout(nrow = 1, widths = c(1, 0.4))
+pcomb
+ggsave(pcomb, file = here("plots", "histotime_epi_types_dotviolin_wprop.pdf"), width = 3.75, height = 3.25)
+```
+
+Quantify proportions
+
+```{r}
+df <- srt_ti@meta.data %>%
+  add_count(cell_type_epi, lineage_class, name = "numer") %>%
+  add_count(cell_type_epi, name = "denom") %>%
+  mutate(prop = numer / denom) %>%
+  distinct(cell_type_epi, lineage_class, numer, denom, prop)
+df
+```
+
+
+
+
+```{r}
+FeaturePlot(srt_ti, features = "pseudotime_scaled", order = T, reduction = "umap", raster = F) +
+  scale_color_viridis_c(option = "inferno")
+```
+
+
+# Spot check genes
+
+```{r}
+gene <- "MYC"
+p1 <- plotSmoothers(sce_gam, assay(sce_gam), gene = gene, lwd = 1, plotLineages = T) +
+  labs(title = gene)
+p1
+```
+
+# Association/Pattern test
+
+```{r}
+# srt_ti <- srt_tum[,colnames(sce_ti)]
+#
+# srt_ti$pseudotime <- sce_ti$pseudotime
+# srt_ti$lineage <- sce_ti$lineage
+#
+# srt_ti$mcluster_merge <- sce_ti$mcluster_merge
+
+# sce_ti <- fitGAM(sce_ti, parallel = TRUE, BPPARAM = BPPARAM)
+
+# test for dynamic expression across both lineages
+ATres <- associationTest(sce_gam, lineages = T, l2fc = 2) %>%
+  rownames_to_column("gene")
+
+ATres <- ATres %>%
+  mutate(
+    pvalue_ovr_adj = p.adjust(pvalue, method = "bonf"),
+    pvalue_1_adj = p.adjust(pvalue_1, method = "bonf"),
+    pvalue_2_adj = p.adjust(pvalue_2, method = "bonf")
+  ) %>%
+  mutate(
+    sig_ovr = pvalue_ovr_adj < 0.05,
+    sig_l1 = pvalue_1_adj < 0.05,
+    sig_l2 = pvalue_2_adj < 0.05
+  ) # ,
+# sig_info = as.factor(case_when(
+#  sig_l1 & sig_l2 & sig_ovr ~ "both_ovr",
+#  sig_l1 & sig_l1 & !sig_ovr ~ "both_not_ovr",
+#  sig_l1 &
+#  sig_l2 ~ "l2",
+#  .default = "none"
+# )))
+
+# colnames(ATres) <- paste0(colnames(ATres), "_assoc")
+
+# Test for different patterns between lineages
+pattern_res <- patternTest(sce_gam, l2fc = 2) %>%
+  mutate(
+    pvalue_adj = p.adjust(pvalue, method = "bonf"),
+    sig_pattern = pvalue_adj < 0.05
+  ) %>%
+  rownames_to_column("gene")
+
+
+gene_res <- full_join(ATres, pattern_res, by = "gene") %>%
+  # mutate(keep = !(sig_info == "none" & !sig_pattern))
+  mutate(
+    sig_status = paste(sig_ovr, sig_l1, sig_l2, sig_pattern, sep = "_"),
+    keep = grepl("TRUE", sig_status)
+  )
+gene_res$keep[is.na(gene_res$keep)] <- FALSE
+```
+
+
+
+# Cluster genes 
+
+Using cosine distance and graph based clustering
+
+```{r}
+gene_list <- gene_res$gene[gene_res$keep]
+
+ysmooth_df <- predictSmooth(models = sce_gam, gene = gene_list, nPoints = 100, tidy = TRUE) %>%
+  mutate(log_counts = log1p(yhat)) %>%
+  mutate(lineage = factor(lineage, levels = c(1, 2), labels = c("LUSC", "SCLC"))) %>%
+  group_by(gene, lineage) %>%
+  mutate(
+    pseudotime_rank = 1:n(),
+    time_scaled = standardize(pseudotime_rank)
+  ) %>%
+  ungroup() %>%
+  group_by(gene) %>%
+  mutate(
+    log_counts_scaled = scale(log_counts)[, 1],
+    log_counts_standardized = standardize(log_counts)
+  ) %>%
+  ungroup()
+
+# A full version
+ysmooth_df_full <- predictSmooth(models = sce_gam, gene = rownames(sce_gam), nPoints = 100, tidy = TRUE) %>%
+  mutate(log_counts = log1p(yhat)) %>%
+  mutate(lineage = factor(lineage, levels = c(1, 2), labels = c("LUSC", "SCLC"))) %>%
+  group_by(gene, lineage) %>%
+  mutate(
+    pseudotime_rank = 1:n(),
+    time_scaled = standardize(pseudotime_rank)
+  ) %>%
+  ungroup() %>%
+  group_by(gene) %>%
+  mutate(
+    log_counts_scaled = scale(log_counts)[, 1],
+    log_counts_standardized = standardize(log_counts)
+  ) %>%
+  ungroup()
+
+mat <- predictSmooth(models = sce_gam, gene = gene_list, nPoints = 100, tidy = FALSE)
+
+mat_full <- predictSmooth(models = sce_gam, gene = rownames(sce_gam), nPoints = 100, tidy = FALSE)
+# %>%
+# t() %>%
+# scale() %>%
+# t()
+```
+
+
+```{r}
+mat_scaled <- scale(mat)
+
+dmat <- 1 - coop::cosine(t(mat_scaled))
+dmat <- as.dist(dmat)
+
+# dmat <- dist(mat)
+
+nn <- FindNeighbors(dmat, annoy.metric = "cosine", k.param = 10, nn.method = "annoy")
+
+# hc_genes <- hclust(dmat, method = "ward.D2")
+
+cluster <- scatools::leiden_wrapper(nn$snn, resolution = 0.5, group_singletons = T)
+
+# cluster_hc <- cutree(hc_genes, k = 9)
+
+gene_umap <- uwot::umap(dmat, n_neighbors = 10, seed = 3, metric = "euclidean") %>%
+  as.data.frame() %>%
+  rownames_to_column("gene")
+colnames(gene_umap) <- c("gene", "UMAP1", "UMAP2")
+
+cls_df <- data.frame(gene = names(cluster), cluster = cluster)
+
+gene_umap <- gene_umap %>%
+  left_join(cls_df)
+# gene_umap$hc_cluster <- cluster_hc
+```
+
+```{r, fig.width = 4, fig.height = 3}
+gene_umap_cnt <- gene_umap %>%
+  group_by(cluster) %>%
+  summarize(UMAP1 = median(UMAP1), UMAP2 = median(UMAP2)) %>%
+  mutate(lab = as.factor(cluster))
+
+gene_umap %>%
+  ggplot(aes(x = UMAP1, y = UMAP2, color = factor(cluster))) +
+  geom_point() +
+  geom_text_repel(color = "black", data = gene_umap_cnt, aes(x = UMAP1, y = UMAP2, label = lab), size = 3, fontface = "bold", bg.colour = "white", bg.r = .2, force = 0, max.iter = 1e9, min.segment.length = Inf, max.time = 1, max.overlaps = Inf) +
+  labs(color = "Cluster") +
+  guides(color = guide_legend(keyheight = 0.5))
+```
+
+```{r, fig.width = 3, fig.height = 8}
+ysmooth_df <- left_join(ysmooth_df, gene_umap)
+ysmooth_df$lineage <- as.factor(ysmooth_df$lineage)
+
+# Mean cluster patterns
+smooth_df_grouped <- ysmooth_df %>%
+  group_by(cluster, lineage, time_scaled, time, pseudotime_rank) %>%
+  mutate(mean_exp = mean(log_counts_scaled)) %>%
+  distinct(lineage, time_scaled, pseudotime_rank, time, cluster, mean_exp)
+smooth_df_grouped$lineage <- as.factor(smooth_df_grouped$lineage)
+range_y <- range(smooth_df_grouped$mean_exp) + (0.1 * range(smooth_df_grouped$mean_exp))
+
+# Cluster the clusters for ordering and categorization
+mat_pat <- smooth_df_grouped %>%
+  pivot_wider(id_cols = cluster, names_from = c(pseudotime_rank, lineage), values_from = mean_exp) %>%
+  column_to_rownames("cluster") %>%
+  as.matrix() %>%
+  t() %>%
+  scale() %>%
+  t()
+
+dmat_pat <- 1 - coop::cosine(t(mat_pat))
+dmat_pat <- as.dist(dmat_pat)
+hc_pat <- hclust(dmat_pat, method = "ward.D2")
+
+pat_order <- hc_pat$labels[hc_pat$order]
+# pat_order <- as.character(c(6, 1, 5, 4, 7, 8, 2, 9, 3))
+```
+
+Can also add a delta between the two lineages...
+
+```{r, fig.width = 3, fig.height = 8}
+hc_genes <- hclust(dmat, method = "ward.D2")
+
+# g_tree <- ggtree::ggtree(hc_pat, branch.length="none") + scale_x_reverse()
+
+p1 <- ysmooth_df %>%
+  ggplot(aes(x = time_scaled, y = fct_relevel(gene, hc_genes$labels[hc_genes$order]))) +
+  geom_tile(aes(fill = log_counts_standardized)) +
+  facet_grid(fct_relevel(factor(cluster), pat_order) ~ lineage, scales = "free") +
+  scale_fill_viridis_c(limits = c(0, 1), oob = scales::squish) +
+  # scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red"), limits = c(-1, 2), oob = scales::squish,
+  # labels = c(-1, 0, 1, 2), breaks = c(-1, 0, 1, 2)) +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(), axis.line = element_blank(),
+    strip.background = element_blank(),
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(expand = c(0, 0), labels = scales::breaks_extended(n = 2), breaks = c(0, 1)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  labs(x = "Histotime", y = "Genes", fill = "Expression") +
+  guides(fill = guide_colorbar(keywidth = 3, keyheight = 0.4))
+
+p2 <- ysmooth_df %>%
+  # filter(gene == "SFTPA2") %>%
+  ggplot(aes(x = time, y = log_counts_scaled)) +
+  # geom_point(aes(color = lineage), size = 0.5) +
+  geom_line(aes(group = interaction(gene, lineage), color = lineage), linewidth = 0.1, alpha = 0.1) +
+  geom_line(data = smooth_df_grouped, aes(group = lineage, y = mean_exp), linewidth = 1.25, linetype = "solid", alpha = 0.8, color = "white") +
+  geom_line(data = smooth_df_grouped, aes(group = lineage, color = lineage, y = mean_exp), linewidth = 0.75, linetype = "solid") +
+  facet_grid2(fct_relevel(factor(cluster), pat_order) ~ .) +
+  # geom_hline(yintercept = 0, linetype = "dashed", alpha = 1) +
+  # geom_vline(xintercept = 6, linetype = "dashed") +
+  scale_color_manual(values = colors$histology_predominant_short) +
+  theme_classic() +
+  theme(
+    legend.position = "top", axis.line = element_blank(),
+    panel.border = element_rect(fill = NA, color = "black"),
+    axis.ticks = element_blank(), axis.text = element_blank(),
+    strip.background = element_blank()
+  ) +
+  coord_cartesian(ylim = range_y) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(color = "Lineage", x = "Histotime", y = "Expression") +
+  guides(color = guide_legend(override.aes = list(linewidth = 2), ncol = 1, keyheight = 0.4))
+
+pcomb <- (p1 + theme(strip.text.y = element_blank())) + p2 + plot_layout(nrow = 1, widths = c(2.5, 1)) & theme(legend.position = "bottom", legend.title.position = "top", legend.title = element_text(hjust = 0.5), plot.margin = margin())
+# ggsave(pcomb, file = here("plots", "histotime_clusters_tracks.pdf"), width = 5, height = 12)
+pcomb
+```
+
+
+Calculate and plot the deltas
+
+```{r, fig.width = 4, fig.height = 7}
+df <- ysmooth_df %>%
+  pivot_wider(id_cols = c(pseudotime_rank, gene), names_from = lineage, values_from = log_counts) %>%
+  mutate(log2fc = log2(exp(LUSC) / exp(SCLC))) %>%
+  left_join(distinct(ysmooth_df[, c("pseudotime_rank", "time_scaled")])) %>%
+  left_join(gene_umap) %>%
+  mutate(label = "Log2FC")
+
+
+p_log2fc <- df %>%
+  ggplot(aes(x = time_scaled, y = fct_relevel(gene, hc_genes$labels[hc_genes$order]))) +
+  geom_tile(aes(fill = log2fc)) +
+  facet_grid(fct_relevel(factor(cluster), pat_order) ~ label, scales = "free") +
+  # scale_fill_viridis_c(limits = c(0, 2), oob = scales::squish) +
+  scale_fill_gradient2(low = colors$histo_cols[["SCLC"]], high = colors$histo_cols[["LUSC"]], limits = c(-3, 3), oob = scales::squish, breaks = c(-3, 3), labels = c("SCLC", "LUSC")) +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(), axis.line = element_blank(),
+    strip.background = element_blank(),
+    strip.text.y = element_blank(),
+    panel.border = element_rect(fill = NA, color = "black")
+  ) +
+  scale_x_continuous(expand = c(0, 0), labels = scales::breaks_extended(n = 2), breaks = c(0, 1)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  labs(x = "Histotime", y = NULL, fill = "Log2FC") +
+  guides(fill = guide_colorbar(keywidth = 3, keyheight = 0.4))
+
+
+pcomb2 <- (p1 + theme(strip.text.y = element_blank())) + p_log2fc + p2 + plot_layout(nrow = 1, widths = c(2, 1, 1)) & theme(legend.position = "bottom", legend.title.position = "top", legend.title = element_text(hjust = 0.5))
+# ggsave(pcomb2, file = here("plots", "histotime_clusters_tracks2.pdf"), width = 4, height = 7)
+pcomb2
+```
+
+
+##### Characterize clusters
+
+Characterize these clusters first looking for supervised genes and then using gene set enrichment
+
+```{r}
+library(clusterProfiler)
+cls_genes <- distinct(ysmooth_df, gene, cluster) %>%
+  arrange(cluster) %>%
+  left_join(gene_res)
+
+# filter(cls_genes, cluster %in% c(1), sig_pattern, sig_info == "l2") %>% view
+
+cls_genes[grep("SOX", cls_genes$gene), ]
+cls_genes[grep("KRT", cls_genes$gene), ]
+cls_genes[grep("^FOX", cls_genes$gene), ]
+
+cls_genes[grep("ASCL1", cls_genes$gene), ]
+cls_genes[grep("NEUROD", cls_genes$gene), ]
+cls_genes[grep("SFT", cls_genes$gene), ]
+cls_genes[grep("^TP", cls_genes$gene), ]
+```
+
+
+
+# Marker gene plots
+
+```{r}
+markers <- load_markers()
+```
+
+
+```{r, fig.width = 5, fig.height = 7}
+epi_marker_df <- enframe(markers$epi_markers_final, name = "cell_type", value = "gene") %>%
+  unnest(cols = "gene") %>%
+  left_join(ysmooth_df_full, relationship = "many-to-many") %>%
+  mutate(cell_type = factor(cell_type, levels = names(markers$epi_markers_final)))
+
+epi_marker_df %>%
+  group_by(gene) %>%
+  mutate(counts_scaled = scale(log_counts)[, 1]) %>%
+  ggplot(aes(x = as.numeric(pseudotime_rank), y = gene)) +
+  geom_tile(aes(fill = log_counts_scaled)) +
+  facet_grid(cell_type ~ lineage, scales = "free", space = "free") +
+  scale_fill_viridis_c(option = "inferno", limits = c(-2, 2), oob = scales::squish) +
+  # scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red"), limits = c(-1, 2), oob = scales::squish,
+  # labels = c(-1, 0, 1, 2), breaks = c(-1, 0, 1, 2)) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks = element_blank(), axis.line = element_blank(),
+    strip.background = element_blank(),
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "bottom",
+    strip.text.y = element_text(hjust = 0, angle = 0)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  labs(x = "Histotime", y = "Genes", fill = "Expression") +
+  guides(fill = guide_colorbar(keywidth = 3, keyheight = 0.4))
+```
+
+
+# Ucell score within lineages
+
+Load pathways
+
+```{r}
+meta_programs_df <- read.table(file = "https://raw.githubusercontent.com/mjz1/meta_programs_tirosh/refs/heads/main/tirosh_mp_patched.txt", header = T, sep = "\t")
+
+meta_programs <- split(meta_programs_df, meta_programs_df$cell_type)
+
+meta_programs <- map(meta_programs, .f = function(x) {
+  res <- split(x, x$meta_program)
+  map(res, .f = function(y) y$Gene)
+})
+
+names(meta_programs) <- janitor::make_clean_names(names(meta_programs))
+
+pathways_v2 <- read.table(here("metadata", "pathways", "egfr_pathways_v2.txt"), header = T, sep = "\t")
+
+
+all_paths <- c(meta_programs$malignant, split(pathways_v2$Gene, pathways_v2$pathway))
+```
+
+
+```{r}
+library(UCell)
+library(BiocParallel)
+
+ranks <- StoreRankings_UCell(matrix = mat_full, BPPARAM = MulticoreParam(workers = 16, progressbar = T))
+
+histo_scores <- ScoreSignatures_UCell(precalc.ranks = ranks, features = all_paths, name = "", BPPARAM = MulticoreParam(workers = 16, progressbar = T))
+```
+
+
+```{r}
+ucell_df <- histo_scores %>%
+  as.data.frame() %>%
+  rownames_to_column("id") %>%
+  separate(id, into = c("lineage_no", "pseudotime_rank")) %>%
+  mutate(pseudotime = as.numeric(pseudotime_rank) / 100) %>%
+  mutate(lineage = factor(lineage_no, levels = c("lineage1", "lineage2"), labels = c("LUSC", "SCLC"))) %>%
+  pivot_longer(cols = colnames(histo_scores), names_to = "features.plot", values_to = "Score") %>%
+  mutate(features.plot = fct_recode(
+    features.plot,
+    "LUAD" = "LUAD_GIRARD",
+    "LUSC" = "LUSC_GIRARD",
+    "SCLC" = "SCLC_CCLE"
+  ))
+```
+
+
+## Check everything
+
+```{r}
+ucell_mat <- as.matrix(histo_scores)
+
+ucell_mat <- ucell_mat[, colMeans(ucell_mat) >= 0.05]
+
+mat <- dist(t(scale(ucell_mat)))
+
+hc <- hclust(mat, method = "complete")
+
+p <- ucell_df %>%
+  group_by(features.plot) %>%
+  mutate(Score_scaled = scale(Score)[, 1]) %>%
+  filter(features.plot %in% colnames(ucell_mat)) %>%
+  ggplot(aes(x = pseudotime, y = fct_relevel(features.plot, hc$labels[hc$order]))) +
+  geom_tile(aes(fill = Score_scaled)) +
+  facet_grid(. ~ lineage, scales = "free", space = "free") +
+  scale_fill_viridis_c(option = "inferno", limits = c(-2, 2), oob = scales::squish) +
+  # scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red"), limits = c(-1, 2), oob = scales::squish,
+  # labels = c(-1, 0, 1, 2), breaks = c(-1, 0, 1, 2)) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks = element_blank(), axis.line = element_blank(),
+    strip.background = element_blank(),
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "bottom",
+    strip.text.y = element_text(hjust = 0, angle = 0)
+  ) +
+  # legendry::scale_y_dendro(hc) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  labs(x = "Histotime", y = NULL, fill = "Expression") +
+  guides(fill = guide_colorbar(keywidth = 3, keyheight = 0.4))
+
+pdf(file = here("plots", "full_sig_histotime.pdf"), width = 10, height = 30)
+print(p)
+dev.off()
+```
+
+
+## Spot check
+
+```{r, fig.width = 10, fig.height = 4}
+ucell_df %>%
+  filter(features.plot == "BENPORATH_SOX2_TARGETS") %>%
+  ggplot(aes(x = pseudotime, y = Score, color = features.plot, group = features.plot)) +
+  geom_line(linewidth = 1) +
+  scale_color_nejm() +
+  guides(linetype = guide_legend(override.aes = list(linewidth = 1))) +
+  scale_x_continuous(breaks = c(0, 1)) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    strip.background = element_blank(),
+    axis.line = element_blank(),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5)
+  ) +
+  facet_grid(. ~ lineage, scales = "free_y")
+```
+
+
+## Select pathways
+
+```{r}
+emt_paths <- grep("emt|HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", ignore.case = T, colnames(histo_scores), value = T)
+myc_paths <- c(grep("myc", ignore.case = T, colnames(histo_scores), value = T))
+stemness <- c("WONG_EMBRYONIC_STEM_CELL_CORE", "BENPORATH_PRC2_TARGETS")
+metabolic_paths <- c("HALLMARK_GLYCOLYSIS", "HALLMARK_OXIDATIVE_PHOSPHORYLATION", "HALLMARK_MTORC1_SIGNALING")
+histological_malignant <- c("LUAD", "LUSC", "SCLC")
+histological <- c("TRAVAGLINI_LUNG_ALVEOLAR_EPITHELIAL_TYPE_1_CELL", "TRAVAGLINI_LUNG_ALVEOLAR_EPITHELIAL_TYPE_2_CELL", "alveolar", "TRAVAGLINI_LUNG_BASAL_CELL", "TRAVAGLINI_LUNG_CILIATED_CELL", "TRAVAGLINI_LUNG_CLUB_CELL", "TRAVAGLINI_LUNG_NEUROENDOCRINE_CELL", "TRAVAGLINI_LUNG_PROLIFERATING_BASAL_CELL", "TRAVAGLINI_LUNG_PROXIMAL_BASAL_CELL")
+cell_cycle <- c(grep("cycle", colnames(histo_scores), ignore.case = T, value = T))
+mapk <- c("REACTOME_MAPK_FAMILY_SIGNALING_CASCADES", "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES", "BIOCARTA_MAPK_PATHWAY", "KEGG_MAPK_SIGNALING_PATHWAY", "REACTOME_SIGNALING_BY_EGFR")
+
+
+pth_list <- list(
+  "EMT" = emt_paths,
+  "MYC" = myc_paths,
+  "Stem" = stemness,
+  "Metabolic" = metabolic_paths,
+  "Lung Cancer" = histological_malignant,
+  "Histological" = histological,
+  "Cell Cycle" = cell_cycle,
+  "MAPK" = mapk
+)
+
+pth_cat_df <- enframe(pth_list, name = "Category", value = "features.plot") %>%
+  unnest(cols = "features.plot")
+
+pth_df <- ucell_df %>%
+  filter(features.plot %in% unlist(pth_list)) %>%
+  left_join(pth_cat_df) %>%
+  filter(!grepl("TGFB", features.plot)) %>%
+  mutate(pathway = case_when(
+    grepl("^TRAVAGLINI_LUNG_", features.plot) ~ str_to_title(gsub("_", " ", gsub("TRAVAGLINI_LUNG_", "", features.plot))),
+    features.plot == "alveolar" ~ "Alveolar Signature",
+    grepl("^HALLMARK", features.plot) ~ str_to_title(gsub("_", " ", gsub("HALLMARK_", "", features.plot))),
+    features.plot == "emt_i" ~ "EMT (I)",
+    features.plot == "emt_ii" ~ "EMT (II)",
+    features.plot == "emt_iii" ~ "EMT (III)",
+    features.plot == "emt_iv" ~ "EMT (IV)",
+    features.plot == "S.Score" ~ "S Score",
+    features.plot == "G2M.Score" ~ "G2M Score",
+    features.plot == "cell_cycle_g1_s" ~ "G1S",
+    features.plot == "cell_cycle_g2_m" ~ "G2M",
+    features.plot == "cell_cycle_hmg_rich" ~ "HMG Rich",
+    features.plot == "myc" ~ "MYC",
+    features.plot == "WONG_EMBRYONIC_STEM_CELL_CORE" ~ "Embryonic Stem Cell (Wong)",
+    features.plot == "BENPORATH_PRC2_TARGETS" ~ "PRC2 Targets (Ben-Porath)",
+    features.plot == "REACTOME_MAPK_FAMILY_SIGNALING_CASCADES" ~ "MAPK (Reactome)",
+    features.plot == "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES" ~ "Nuclear MAPK (Reactome)",
+    features.plot == "REACTOME_ONCOGENIC_MAPK_SIGNALING" ~ "Oncogenic MAPK (Reactome)",
+    features.plot == "BIOCARTA_MAPK_PATHWAY" ~ "MAPK (Biocarta)",
+    features.plot == "KEGG_MAPK_SIGNALING_PATHWAY" ~ "MAPK (KEGG)",
+    features.plot == "REACTOME_SIGNALING_BY_EGFR" ~ "EGFR (Reactome)",
+    .default = features.plot
+  )) %>%
+  # Fix additional
+  mutate(pathway = case_when(
+    pathway == "Mtorc1 Signaling" ~ "MTORC1",
+    pathway == "Epithelial Mesenchymal Transition" ~ "EMT",
+    pathway == "Alveolar Epithelial Type 2 Cell" ~ "AT2 Cell",
+    pathway == "Alveolar Epithelial Type 1 Cell" ~ "AT1 Cell",
+    pathway == "Oxidative Phosphorylation" ~ "OxPhos",
+    grepl("Myc", pathway) ~ gsub("Myc", "MYC", pathway),
+    .default = pathway
+  )) %>%
+  mutate(
+    pathway_source = case_when(
+      features.plot %in% names(meta_programs$malignant) ~ "Malignant Metaprograms",
+      grepl("^TRAVAGLINI", features.plot) ~ "Travaglini",
+      grepl("^HALLMARK_", features.plot) ~ "Hallmark Pathways",
+      # features.plot %in% c("S.Score", "G2M.Score") ~ "Seurat",
+      .default = "Curated"
+    )
+  ) %>%
+  # Remove extra myc pathways since they all show the same thing
+  filter(
+    !(grepl("MYC", features.plot, ignore.case = T) & pathway_source == "Curated")
+  ) %>%
+  arrange(desc(pathway_source), desc(pathway))
+
+# constructive::construct(unique(pth_df$pathway))
+pth_cat_order <- c(
+  "Histological", "Lung Cancer", "MAPK", "EMT", "MYC",
+  "Stem", "Metabolic", "Cell Cycle"
+)
+
+pth_order <- c(
+  "G1S", "G2M", "G2M Score", "HMG Rich", "S Score",
+  "EMT (I)", "EMT (II)", "EMT (III)", "EMT (IV)", "EMT",
+  "LUAD", "LUSC", "SCLC",
+  "AT1 Cell", "AT2 Cell", "Alveolar Signature", "Basal Cell", "Proximal Basal Cell",
+  "Proliferating Basal Cell", "Club Cell", "Ciliated Cell",
+  "Neuroendocrine Cell", "MYC", "MYC Targets V1", "MYC Targets V2",
+  "Glycolysis", "OxPhos", "MTORC1", "Embryonic Stem Cell (Wong)",
+  "PRC2 Targets (Ben-Porath)",
+  "MAPK (KEGG)", "MAPK (Biocarta)", "Nuclear MAPK (Reactome)", "MAPK (Reactome)", "EGFR (Reactome)"
+)
+
+pth_df <- pth_df %>%
+  mutate(
+    pathway = fct_relevel(pathway, rev(pth_order)),
+    Category = fct_relevel(Category, pth_cat_order)
+  )
+```
+
+
+
+
+```{r, fig.height = 6, fig.width = 5}
+p1 <- pth_df %>%
+  ggplot(aes(x = "Pathway Source", y = pathway)) +
+  geom_tile(aes(fill = pathway_source), color = "black") +
+  scale_fill_pander() +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  theme(
+    axis.line.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.line.y = element_blank(), legend.position = "left", strip.background = element_blank(), strip.text = element_blank()
+  ) +
+  guides(
+    x = guide_axis(angle = 90),
+    fill = guide_legend(keywidth = 0.5, keyheight = 0.5, ncol = 2)
+  ) +
+  facet_grid(Category ~ ., scales = "free", space = "free") +
+  labs(y = NULL, x = NULL, fill = "Pathway Source")
+
+
+p2 <- pth_df %>%
+  group_by(pathway) %>%
+  mutate(Score_scaled = scale(Score)[, 1]) %>%
+  ggplot(aes(x = pseudotime, y = pathway)) +
+  geom_tile(aes(fill = Score_scaled)) +
+  facet_grid(Category ~ lineage, scales = "free", space = "free") +
+  scale_fill_viridis_c(option = "inferno", limits = c(-2, 2), oob = scales::squish) +
+  # scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red"), limits = c(-1, 2), oob = scales::squish,
+  # labels = c(-1, 0, 1, 2), breaks = c(-1, 0, 1, 2)) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks = element_blank(), axis.line = element_blank(),
+    strip.background = element_blank(),
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "bottom",
+    strip.text.y = element_text(hjust = 0, angle = 0)
+  ) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  labs(x = "Histotime", y = NULL, fill = "Expression") +
+  guides(fill = guide_colorbar(keywidth = 3, keyheight = 0.4))
+# ggsave(p1, file = here("plots", "histotime_signature_heatplot.pdf"), width = 5, height = 6)
+
+
+sig_heatplot <-
+  free(
+    (p1 +
+      theme(plot.margin = margin(l = 0.25, r = 1, unit = "mm"))),
+    type = "space", side = "b"
+  ) +
+    free(
+      (p2 +
+        theme(plot.margin = margin(r = 0.25, unit = "mm"), axis.text.y = element_blank(), axis.ticks.y = element_blank())),
+      type = "label", side = "b"
+    ) +
+    plot_layout(guides = "collect", ncol = 2, widths = c(0.03, 1)) +
+    plot_annotation(theme = theme(legend.position = "bottom")) &
+    theme(
+      panel.spacing = unit(1, "mm"),
+      panel.border = element_rect(fill = NA, color = "black", linewidth = 0.5),
+      legend.box.margin = margin(), legend.title.position = "top", legend.title = element_text(hjust = 0.5)
+    ) &
+    coord_cartesian(clip = "off")
+ggsave(sig_heatplot, file = here("plots", "histotime_signature_heatmap.pdf"), width = 5, height = 6)
+sig_heatplot
+```
+
+# Histoviolins
+
+## Histotime weights
+
+Weights of cells in each lineage along psuedotime
+
+```{r, fig.width = 8, fig.height = 2.75}
+srt_ti <- AddMetaData(srt_ti, slingCurveWeights(sce_ti))
+srt_ti$lineage_probability <- srt_ti$Lineage2 - srt_ti$Lineage1
+srt_ti$lineage_sum <- srt_ti$Lineage2 + srt_ti$Lineage1
+
+srt_ti$lineage_probability2 <- srt_ti$lineage_probability * srt_ti$Histotime_s
+```
+
+Add mutation information
+
+```{r}
+```
+
+
+
+Quick check what this would look like over cell types
+
+```{r}
+p1 <- srt_ti@meta.data %>%
+  ggplot(aes(x = lineage_probability2, y = fct_reorder(cell_type_epi, -lineage_probability2, median))) +
+  # geom_violin(scale = "width") +
+  ggrastr::rasterize(geom_quasirandom(aes(color = cell_type_epi), size = 0.1, alpha = 0.5, show.legend = F), dpi = 1000) +
+  geom_pointrange(
+    pch = 21,
+    stat = "summary", fatten = 2, color = "black", fill = "white", stroke = 0.5,
+    fun.min = function(z) {
+      quantile(z, 0.25)
+    },
+    fun.max = function(z) {
+      quantile(z, 0.75)
+    },
+    fun = median, position = position_dodge(width = 0.8)
+  ) +
+  guides(x = guide_axis(cap = "upper")) +
+  scale_color_manual(values = colors$cell_type_epi) +
+  scale_x_continuous(breaks = c(-1, 0, 1)) +
+  labs(x = "Histotime", y = "Epithelial cell state") +
+  theme(plot.margin = margin(1, 0, 1, 1, "mm"))
+p1
+```
+
+
+## Leaning cell assignment
+
+```{r, fig.width = 8, fig.height = 2.75}
+srt_ti$lin_leaning <- abs(srt_ti$lineage_probability2) > 0.05
+
+srt_ti$lineage_lean_05 <- srt_ti@meta.data %>%
+  mutate(lineage_lean = case_when(
+    abs(lineage_probability2) <= 0.05 ~ "LUAD",
+    lineage_probability2 > 0 ~ "SCLC",
+    lineage_probability2 < 0 ~ "LUSC",
+    .default = "ERROR"
+  )) %>%
+  pull(lineage_lean)
+
+srt_ti$lineage_lean_20 <- srt_ti@meta.data %>%
+  mutate(lineage_lean = case_when(
+    abs(lineage_probability2) <= 0.2 ~ "LUAD",
+    lineage_probability2 > 0 ~ "SCLC",
+    lineage_probability2 < 0 ~ "LUSC",
+    .default = "ERROR"
+  )) %>%
+  pull(lineage_lean)
+
+# Save table with these values
+# srt_ti@meta.data %>%
+#   select(cell_id, patient, time_point, Histotime, Lineage1, Lineage2, lineage_probability, lineage_probability2, lineage_lean_05, lineage_lean_20) %>%
+#   write.table(file = here("results", "histotime_cells_v2.txt"), quote = F, sep = "\t", row.names = F, col.names = T)
+
+# srt_ti@meta.data %>%
+#   ggplot(aes(x = lineage_probability, y = lineage_sum)) +
+#   geom_point(size = 0.1)
+```
+
+## Proportion plot summarized
+
+```{r, fig.width=6, fig.height=2.5}
+p_lineage_prop <- srt_ti@meta.data %>%
+  add_count(sample_id_new, name = "denom") %>%
+  add_count(sample_id_new, lineage_lean_20, name = "numer") %>%
+  mutate(prop = numer / denom) %>%
+  # filter(n >= 20) %>%
+  distinct(sample_id_new, time_point, lineage_lean_20, prop, numer, denom, histology_predominant_short) %>%
+  # mutate(time_point = fct_recode(time_point, "PD" = "Progression")) %>%
+  # left_join(sample_meta) %>%
+  complete(lineage_lean_20, nesting(sample_id_new, time_point, histology_predominant_short), fill = list(prop = 0)) %>%
+  mutate(histology_predominant_short = fct_relevel(histology_predominant_short, "LUAD", "LUSC", "SCLC", "Poorly Diff.")) %>%
+  arrange((histology_predominant_short)) %>%
+  ggplot(aes(x = time_point, y = prop)) +
+  see::geom_jitter2(aes(color = histology_predominant_short), alpha = 0.8, width = 0.35) +
+  facet_nested(. ~ lineage_lean_20, scales = "free", space = "free", switch = "x") +
+  scale_color_manual(values = colors$histology_predominant_short) +
+  ggpubr::geom_pwc(tip.length = 0, symnum.args = symnum.args, label = "p.adj.signif", p.adjust.method = "BH", label.size = 3) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25), expand = expansion(mult = c(0.05, 0.1))) +
+  guides(
+    x = guide_axis(cap = "both"),
+    y = guide_axis(cap = "both")
+  ) +
+  labs(color = "Clinical Histology") +
+  theme(
+    strip.background.x = element_part_rect(side = "t", fill = NA), strip.placement = "outside",
+    axis.title.y = element_text(hjust = 0.3)
+  ) +
+  labs(x = NULL, y = "Proportion\nCommitted\n(>20%)")
+p_lineage_prop
+ggsave(p_lineage_prop, file = here("plots", "lineage_prop_jitter_v2.pdf"), width = 6, height = 2.5)
+```
+
+
+
+```{r}
+m <- p_lineage_prop$data %>%
+  pivot_wider(id_cols = "sample_id_new", names_from = lineage_lean_20, values_from = prop) %>%
+  column_to_rownames("sample_id_new") %>%
+  as.matrix()
+
+scrna_histo <- apply(m, MARGIN = 1, FUN = function(x) {
+  colnames(m)[which(x == max(x))]
+}) %>%
+  enframe(name = "sample_id_new", value = "scrna_histology") %>%
+  left_join(db$metadata)
+
+srt_ti$scrna_histo <- scrna_histo$scrna_histology[match(srt_ti$sample_id_new, scrna_histo$sample_id_new)]
+```
+
+## Dedifferentiation score
+
+If we rescale within the core luad branch we approximate a luad dedifferentiation score?
+
+Perhaps take the 95% percentile as the max clipping. 
+
+```{r}
+quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD", ]$pseudotime_scaled, prob = 0.95)
+
+srt_ti@meta.data %>%
+  filter(lineage_class == "LUAD") %>%
+  ggplot(aes(x = pseudotime_scaled)) +
+  geom_histogram(bins = 50) +
+  geom_vline(xintercept = quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD", ]$pseudotime_scaled, prob = c(0.025, 0.975)))
+```
+
+Overlap with the other branches?
+
+```{r}
+srt_ti@meta.data %>%
+  ggplot(aes(x = lineage_class, y = pseudotime_scaled, fill = lineage_class)) +
+  geom_violin() +
+  geom_hline(yintercept = quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD", ]$pseudotime_scaled, prob = c(0.025, 0.975)))
+```
+
+
+```{r}
+srt_ti$luad_dediff <- srt_ti$pseudotime_scaled
+cuts <- quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD", ]$pseudotime_scaled, prob = c(0.05, 0.99))
+
+srt_ti$luad_dediff[srt_ti$luad_dediff < cuts[1]] <- cuts[1]
+srt_ti$luad_dediff[srt_ti$luad_dediff > cuts[2]] <- cuts[2]
+
+srt_ti$luad_dediff <- standardize(srt_ti$luad_dediff)
+```
+
+
+```{r}
+p_linprob_dediff <- srt_ti@meta.data %>%
+  arrange(desc(abs(luad_dediff))) %>%
+  # filter(lineage_class == "LUAD") %>%
+  ggplot(aes(x = fct_reorder(sample_id_new, (lineage_probability2), mean), y = luad_dediff)) +
+  geom_quasirandom(size = 0.01, bandwidth = 3, aes(color = luad_dediff)) +
+  guides(
+    x = guide_axis(angle = 90),
+    color = guide_colorbar(keywidth = 0.4, keyheight = 3)
+  ) +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  scale_color_viridis_c(option = "inferno", breaks = c(0, 0.5, 1)) +
+  labs(x = "Sample ID", y = "Dediff.\nScore ", color = "Dediff.\nScore") +
+  theme(
+    strip.background = element_blank(),
+    axis.line = element_blank(),
+    panel.border = element_rect(linewidth = 1, fill = NA, color = "black")
+  )
+
+p_linprob_dediff <- ggrastr::rasterise(p_linprob_dediff, layers = "Point", dpi = 300)
+p_linprob_dediff
+```
+
+## Leaning violin
+
+```{r, fig.width = 9, fig.height = 2.75}
+# Of the possibly committed cells how much go each way in each sample
+p_linprob_vln <- srt_ti@meta.data %>%
+  arrange(desc(abs(lineage_probability2))) %>%
+  ggplot(aes(x = fct_reorder(sample_id_new, (lineage_probability2), mean), y = lineage_probability2)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", alpha = 1) +
+  geom_quasirandom(size = 0.01, bandwidth = 2, aes(color = lineage_probability2)) +
+  guides(
+    x = guide_axis(angle = 90),
+    color = guide_colorbar(keywidth = 0.4, keyheight = 3)
+  ) +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  scale_y_continuous(breaks = c(-1, 0, 1), limits = c(-1, 1), labels = c("LUSC", "LUAD", "SCLC")) +
+  # scale_color_viridis_c(option = "turbo", breaks = c(-1, 1), labels = c("LUSC", "SCLC")) +
+  scale_color_gradient2(high = colors$histology_predominant_short[["SCLC"]], low = colors$histology_predominant_short[["LUSC"]], mid = colors$histology_predominant_short[["LUAD"]], breaks = c(-1, -0.5, 0, 0.5, 1), limits = c(-1, 1), labels = c("LUSC", "", "LUAD", "", "SCLC")) +
+  # colorspace::scale_color_continuous_divergingx(palette = "roma", breaks = c(-1, -0.5, 0, 0.5, 1), labels = c("LUSC", "", "LUAD", "", "SCLC")) +
+  theme(
+    strip.background = element_blank(),
+    axis.line = element_blank(),
+    panel.border = element_rect(linewidth = 1, fill = NA, color = "black")
+  ) +
+  labs(x = "Sample ID", y = "Lineage\nCommitment", color = "Lineage")
+
+p_linprob_vln <- ggrastr::rasterise(p_linprob_vln, layers = "Point", dpi = 300)
+p_linprob_vln
+# ggsave(p_linprob_vln, file = here("plots", "lineage_prob_dotviolin.pdf"), width = 9, height = 3)
+```
+
+## Merged violin
+
+```{r, fig.width = 11, fig.height = 7}
+tb_pad <- 0.25
+
+library(ggnewscale)
+
+samp_order <- srt_ti@meta.data %>%
+  filter(!is.na(lineage_probability2)) %>%
+  mutate(sample_id_new = fct_reorder(sample_id_new, lineage_probability2, mean)) %>%
+  pull(sample_id_new) %>%
+  levels()
+
+second_mapk <- read.table(file = here("tables", "secondary_mapk.txt"), header = T, sep = "\t")
+
+anno_df <- srt_ti@meta.data %>%
+  filter(!is.na(lineage_probability2)) %>%
+  distinct(sample_id_new) %>%
+  left_join(db$metadata) %>%
+  left_join(second_mapk, by = c("sample_id_new" = "sample_id")) %>%
+  mutate(MAPKalt = !is.na(secondary_mapk)) %>%
+  mutate(site_of_tissue_simple = factor(site_of_tissue_simple, levels = names(colors$site_of_tissue_simple)))
+anno_df$TP53mut[!anno_df$has_impact] <- "NA"
+anno_df$MAPKalt[!anno_df$has_impact | anno_df$time_point == "TN"] <- "NA"
+anno_df$RB1mut[!anno_df$has_impact] <- "NA"
+
+p_anno <- anno_df %>%
+  ggplot(aes(x = fct_relevel(sample_id_new, samp_order))) +
+  # geom_tile(aes(y = "HistoClass (scRNA)", fill = histo_class), color = "black") +
+  # scale_fill_manual(name = "HistoClass (scRNA)",
+  #                   values = colors$histo_cols,
+  #                   guide = guide_legend(order = 2, keywidth = 0.4, keyheight = 0.5, ncol = 2, position = "bottom", title.position = "top")) +
+  # new_scale_fill() +
+  geom_tile(aes(y = "Clinical Histology", fill = histology_predominant_short), color = "black") +
+  scale_fill_manual(
+    name = "Clinical Histology", values = colors$histology_predominant_short,
+    guide = guide_legend(order = 1, keywidth = 0.4, keyheight = 0.5, ncol = 2, position = "bottom", title.position = "top")
+  ) +
+  new_scale_fill() +
+  geom_tile(data = scrna_histo, aes(y = "scRNA Histology", fill = scrna_histology), color = "black") +
+  scale_fill_manual(
+    name = "scRNA Histology", values = colors$histology_predominant_short,
+    guide = guide_legend(order = 2, keywidth = 0.4, keyheight = 0.5, ncol = 1, position = "bottom", title.position = "top")
+  ) +
+  new_scale_fill() +
+  geom_tile(aes(y = "Tumor Stage", fill = stage_of_tissue_simple), color = "black") +
+  scale_fill_viridis_d(
+    name = "Tumor Stage",
+    guide = guide_legend(order = 3, keywidth = 0.4, keyheight = 0.5, ncol = 2, position = "bottom", title.position = "top")
+  ) +
+  new_scale_fill() +
+  geom_tile(aes(y = "Tissue Site", fill = site_of_tissue_simple), color = "black") +
+  scale_fill_manual(
+    name = "Tissue Site",
+    values = colors$site_of_tissue_simple,
+    guide = guide_legend(order = 4, keywidth = 0.4, keyheight = 0.5, ncol = 2, position = "bottom", title.position = "top")
+  ) +
+  new_scale_fill() +
+  geom_tile(aes(y = "TP53mut", fill = TP53mut), color = "black") +
+  scale_fill_manual(
+    name = "Alterations",
+    values = c("TRUE" = "black", "FALSE" = "white", "NA" = "grey60"), breaks = c("TRUE", "FALSE", "NA"),
+    labels = c("Detected", "Undetected", "Not applicable"),
+    guide = guide_legend(order = 5, keywidth = 0.4, keyheight = 0.1, ncol = 1, position = "bottom", title.position = "top")
+  ) +
+  new_scale_fill() +
+  geom_tile(aes(y = "RB1mut", fill = RB1mut), color = "black", show.legend = F) +
+  scale_fill_manual(
+    values = c("TRUE" = "black", "FALSE" = "white", "NA" = "grey60"), breaks = c("TRUE", "FALSE", "NA"),
+    labels = c("Detected", "Undetected", "Not applicable"),
+    guide = "none"
+  ) +
+  new_scale_fill() +
+  geom_tile(aes(y = "MAPKalt", fill = MAPKalt), color = "black", show.legend = F) +
+  scale_fill_manual(
+    values = c("TRUE" = "black", "FALSE" = "white", "NA" = "grey60"), breaks = c("TRUE", "FALSE", "NA"),
+    labels = c("Detected", "Undetected", "Not applicable"),
+    guide = "none"
+  ) +
+  facet_grid(. ~ fct_relevel(time_point, names(colors$time_point)), scales = "free", space = "free") +
+  theme_minimal() +
+  theme(panel.background = element_blank(), panel.grid = element_blank()) +
+  # guides(fill = guide_legend(keywidth = 0.4, keyheight = 0.5, ncol = 2)) +
+  theme(strip.text = element_blank(), legend.title = element_text(hjust = 0.5), axis.text.y = element_text(size = 8)) +
+  labs(fill = "Tissue Site", y = NULL) +
+  scale_y_discrete(limits = rev(c(
+    "Clinical Histology",
+    "scRNA Histology",
+    "Tumor Stage",
+    "Tissue Site",
+    "TP53mut",
+    "RB1mut",
+    "MAPKalt"
+  )))
+
+p_prop05 <- srt_ti@meta.data %>%
+  filter(!is.na(lineage_probability2)) %>%
+  ggplot(aes(x = fct_relevel(sample_id_new, samp_order))) +
+  geom_bar(aes(fill = lineage_lean_05), position = "fill") +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  scale_fill_manual(values = colors$histology_predominant_short) +
+  guides(
+    x = guide_axis(angle = 90),
+    y = guide_axis(cap = "both"),
+    fill = guide_legend(keywidth = 0.4, keyheight = 0.4)
+  ) +
+  labs(y = "Proportion\nLeaning\n(>5%)", x = NULL, fill = "Lineage") +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(
+    strip.text = element_blank(),
+    axis.text.x = element_blank(),
+    axis.line.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.y = element_text(angle = 0, vjust = 0.5)
+  ) +
+  scale_y_continuous(breaks = c(0, 0.5, 1))
+
+p_branch_prop <- srt_ti@meta.data %>%
+  filter(!is.na(lineage_probability2)) %>%
+  ggplot(aes(x = fct_relevel(sample_id_new, samp_order))) +
+  geom_bar(aes(fill = fct_relevel(lineage_class, names(colors$histology_predominant_short))), position = "fill") +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  scale_fill_manual(values = colors$histology_predominant_short) +
+  guides(
+    x = guide_axis(angle = 90),
+    y = guide_axis(cap = "both"),
+    fill = guide_legend(keywidth = 0.4, keyheight = 0.4)
+  ) +
+  labs(y = "Proportion\n(In branch)", x = NULL, fill = "Lineage") +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(
+    strip.text = element_blank(),
+    axis.text.x = element_blank(),
+    axis.line.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.y = element_text(angle = 0, vjust = 0.5)
+  ) +
+  scale_y_continuous(breaks = c(0, 0.5, 1))
+
+lean_prop <- 0.01
+
+p_lean <- srt_ti@meta.data %>%
+  filter(!is.na(lineage_probability2)) %>%
+  mutate(lineage_lean = case_when(
+    abs(lineage_probability2) <= lean_prop ~ "LUAD",
+    lineage_probability2 > 0 ~ "SCLC",
+    lineage_probability2 < 0 ~ "LUSC",
+    .default = "ERROR"
+  )) %>%
+  ggplot(aes(x = fct_relevel(sample_id_new, samp_order))) +
+  geom_bar(aes(fill = lineage_lean), position = "fill") +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  scale_fill_manual(values = colors$histology_predominant_short) +
+  guides(
+    x = guide_axis(angle = 90),
+    y = guide_axis(cap = "both"),
+    fill = guide_legend(keywidth = 0.4, keyheight = 0.4)
+  ) +
+  labs(y = glue("Proportion\nLeaning"), x = NULL, fill = "Lineage")
+
+
+
+p_prop20 <- srt_ti@meta.data %>%
+  filter(!is.na(lineage_probability2)) %>%
+  ggplot(aes(x = fct_relevel(sample_id_new, samp_order))) +
+  geom_bar(aes(fill = lineage_lean_20), position = "fill") +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  scale_fill_manual(values = colors$histology_predominant_short) +
+  guides(
+    x = guide_axis(angle = 90),
+    y = guide_axis(cap = "both"),
+    fill = guide_legend(keywidth = 0.4, keyheight = 0.4)
+  ) +
+  labs(y = "Proportion\nCommitted\n(>20%)", x = NULL, fill = "Lineage")
+
+p_prop <- free(p_branch_prop, type = "label", side = "l") + free(p_lean, type = "label", side = "l") + plot_layout(ncol = 1, guides = "collect") &
+  theme(
+    strip.text = element_blank(),
+    axis.text.x = element_blank(),
+    axis.line.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.y = element_text(angle = 0, vjust = 0.5, size = 8),
+    axis.text.y = element_text(size = 8)
+  ) &
+  scale_y_continuous(expand = c(0, 0), breaks = c(0, 0.5, 1))
+
+
+pcomb <-
+  free((p_linprob_vln + labs(x = NULL) + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), plot.margin = margin(t = tb_pad, b = 0, unit = "lines"))), type = "label", side = "l") +
+  free((p_linprob_dediff + labs(x = NULL) + theme(strip.text = element_blank(), strip.background = element_blank(), axis.lines = element_blank(), strip.clip = "off", panel.border = element_rect(fill = NA), axis.text.x = element_blank(), axis.ticks.x = element_blank(), plot.margin = margin(t = tb_pad, b = 0, unit = "lines"))), type = "label", side = "l") +
+  free((p_prop + theme(plot.margin = margin())), type = "label", side = "l") + (p_anno + labs(x = "Sample ID") + theme(plot.margin = margin(t = 0, b = tb_pad, unit = "lines")) + guides(x = guide_axis(angle = 90))) + plot_layout(ncol = 1, heights = c(1, 1, 0.8, 0.6))
+pcomb
+
+ggsave(pcomb, file = here("plots", "lineage_prob_dotviolin_anno_v4.pdf"), width = 11, height = 7)
+```
+
+
+## TP53mut TN
+
+```{r, fig.width = 1.75, fig.height = 2}
+p <- srt_ti@meta.data %>%
+  mutate(TP53mut = case_when(
+    has_impact == F ~ "NA",
+    TP53mut ~ "TP53mut",
+    !TP53mut ~ "TP53wt",
+    .default = "Other"
+  )) %>%
+  filter(time_point == "TN" & TP53mut != "NA") %>%
+  ggplot(aes(x = fct_rev(TP53mut), y = luad_dediff)) +
+  geom_violin(scale = "width", aes(fill = TP53mut), show.legend = F) +
+  scale_fill_aaas() +
+  geom_boxplot(width = 0.2, outliers = F) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  guides(
+    y = guide_axis(cap = "both"),
+    x = guide_axis(cap = "both")
+  ) +
+  # geom_pointrange(pch = 21,
+  #   stat = "summary", fatten = 2, color = "black", fill = "white", stroke = 0.5,
+  #   fun.min = function(z) {
+  #     quantile(z, 0.25)
+  #   },
+  #   fun.max = function(z) {
+  #     quantile(z, 0.75)
+  #   },
+  #   fun = median, position = position_dodge(width = 0.8)
+  # ) +
+  # facet_grid(.~time_point, scales = "free") +
+  ggpubr::geom_pwc(label = "p.signif", tip.length = 0, vjust = 0.5) +
+  coord_cartesian(clip = "off") +
+  labs(x = "Treatment Naive", y = "LUAD dedifferentiation")
+p
+ggsave(p, file = here("plots", "TP53mut_TN_luad_dediff.pdf"), width = 1.75, height = 2)
+```
+
+
+```{r, fig.width = 6, fig.height = 3}
+# srt_epi@meta.data %>%
+#   mutate(TP53mut = case_when(
+#     has_impact == F ~ "NA",
+#     TP53mut ~ "TP53mut",
+#     !TP53mut ~ "TP53wt",
+#     .default = "Other"
+#   )) %>%
+#   filter(time_point == "TN" & TP53mut != "NA") %>%
+#   ggplot(aes(x = TP53mut)) +
+#   geom_bar(aes(fill = cell_type_epi), position = "fill") +
+#   scale_fill_manual(values = colors$cell_type_epi)
+
+
+prop_df <- srt_epi@meta.data %>%
+  mutate(TP53mut = case_when(
+    has_impact == F ~ "NA",
+    TP53mut ~ "TP53mut",
+    !TP53mut ~ "TP53wt",
+    .default = "Other"
+  )) %>%
+  filter(time_point == "TN" & TP53mut != "NA", is_tumor_cell) %>%
+  add_count(sample_id, name = "n_samp") %>%
+  add_count(sample_id, cell_type_epi, name = "n_ct") %>%
+  mutate(prop = n_ct / n_samp) %>%
+  distinct(sample_id_new, TP53mut, cell_type_epi, prop)
+
+p <- prop_df %>%
+  ggplot(aes(x = cell_type_epi, y = prop)) +
+  stat_summary(geom = "bar", fun = "median", aes(fill = fct_rev(TP53mut)), position = position_dodge(width = 1)) +
+  # geom_errorbar(fun = IQR, aes(group = fct_rev(TP53mut)), position = "dodge", color = "white") +
+  geom_errorbar(aes(group = fct_rev(TP53mut)),
+    stat = "summary", color = "black", alpha = 0.75, width = 0.5,
+    fun.min = function(z) {
+      quantile(z, 0.25)
+    },
+    fun.max = function(z) {
+      quantile(z, 0.75)
+    },
+    fun = median, position = position_dodge(width = 1)
+  ) +
+
+
+  # geom_errorbar(stat = "summary", aes(group = TP53mut), position = "dodge", notchwidth = 0.2) +
+  # geom_boxplot(aes(fill = fct_rev(TP53mut))) +
+  # scale_fill_manual(values = colors$cell_type_epi) +
+  guides(x = guide_axis(angle = 90)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(y = "Median Proportion", x = "Epithelial Cell State", fill = "TP53 status") +
+  scale_fill_aaas()
+ggsave(p, file = here("plots", "TP53mut_TN_epi_type_proportions.pdf"), width = 6, height = 3)
+p
+```
+
+
+Density on the histotime
+
+```{r}
+df <- FetchData(srt_ti, vars = c("pcagenes_1", "pcagenes_2", "time_point", "cell_type_epi", "lineage_class", "TP53mut", "sample_id_new", "sample_id", "has_impact")) %>%
+  mutate(TP53mut = case_when(
+    has_impact == F ~ "NA",
+    TP53mut ~ "TP53mut",
+    !TP53mut ~ "TP53wt",
+    .default = "Other"
+  )) %>%
+  group_by(time_point, TP53mut) %>%
+  mutate(density = get_density(pcagenes_1, pcagenes_2, n = 500)) %>%
+  mutate(density_scaled = standardize(density)) %>%
+  arrange(density_scaled)
+
+
+tp53mut_dens <- df %>%
+  arrange(density_scaled) %>%
+  # filter(time_point == "TN", TP53mut == "TP53mut") %>%
+  ggplot(aes(x = pcagenes_1, y = pcagenes_2)) +
+  scattermore::geom_scattermore(data = df, color = "grey", pixels = c(256, 256)) +
+  geom_point(aes(color = density_scaled)) +
+  facet_grid(. ~ TP53mut)
+# ggpointdensity::geom_pointdensity()
+#
+
+
+p1a <- df %>%
+  filter(time_point == "TN", TP53mut == "TP53mut") %>%
+  ggplot(aes(x = pcagenes_1, y = pcagenes_2)) +
+  # scattermore::geom_scattermore(data = df, color = "grey") +
+  ggrastr::rasterize(geom_point(data = df, color = "grey", size = 0.1), dpi = 300) +
+  # ggpointdensity::geom_pointdensity()
+  geom_density_2d(adjust = 4, color = "black")
+
+
+p1b <- df %>%
+  filter(time_point == "TN", TP53mut == "TP53wt") %>%
+  ggplot(aes(x = pcagenes_1, y = pcagenes_2)) +
+  # scattermore::geom_scattermore(data = df, color = "grey") +
+  geom_point(data = df, color = "grey", size = 0.1) +
+  # ggpointdensity::geom_pointdensity()
+  geom_density_2d(adjust = 4, color = "black")
+
+p2 <- df %>%
+  filter(time_point == "TN", TP53mut == "TP53wt") %>%
+  ggplot(aes(x = pcagenes_1, y = pcagenes_2)) +
+  scattermore::geom_scattermore(data = df, color = "grey") +
+  geom_point(data = df, color = "grey", size = 0.1) +
+  ggpointdensity::geom_pointdensity()
+```
+
+
+## MAPK alt in PD?
+
+```{r, fig.width = 1.75, fig.height = 2}
+second_mapk <- read.table(file = here("tables", "secondary_mapk.txt"), header = T, sep = "\t")
+
+
+srt_ti$second_mapk <- second_mapk$secondary_mapk[match(srt_ti$sample_id_new, second_mapk$sample_id)]
+
+srt_ti$MAPKalt <- !is.na(srt_ti$second_mapk)
+srt_ti$MAPKalt[!srt_ti$has_impact | srt_ti$time_point == "TN"] <- "NA"
+
+p <- srt_ti@meta.data %>%
+  mutate(MAPKalt = case_when(
+    has_impact == F ~ "NA",
+    MAPKalt == "TRUE" ~ "MAPKalt",
+    MAPKalt == "FALSE" ~ "Unknown",
+    .default = "Other"
+  )) %>%
+  filter(time_point == "PD" & MAPKalt != "NA") %>%
+  ggplot(aes(x = fct_rev(MAPKalt), y = luad_dediff)) +
+  geom_violin(scale = "width", aes(fill = MAPKalt), show.legend = F) +
+  scale_fill_aaas() +
+  geom_boxplot(width = 0.2, outliers = F) +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  guides(
+    y = guide_axis(cap = "both"),
+    x = guide_axis(cap = "both")
+  ) +
+  # geom_pointrange(pch = 21,
+  #   stat = "summary", fatten = 2, color = "black", fill = "white", stroke = 0.5,
+  #   fun.min = function(z) {
+  #     quantile(z, 0.25)
+  #   },
+  #   fun.max = function(z) {
+  #     quantile(z, 0.75)
+  #   },
+  #   fun = median, position = position_dodge(width = 0.8)
+  # ) +
+  # facet_grid(.~time_point, scales = "free") +
+  ggpubr::geom_pwc(label = "p.signif", tip.length = 0, vjust = 0.5) +
+  coord_cartesian(clip = "off") +
+  labs(x = "Treatment Naive", y = "LUAD dedifferentiation")
+p
+ggsave(p, file = here("plots", "MAPKalt_PD_luad_dediff.pdf"), width = 1.75, height = 2)
+```
+
+
+# Save out
+
+```{r}
+saveRDS(srt_ti, file = here("data", "objects", "histotime_processed_mar_2025.rds"), compress = F)
+```
+
+
+# Other attempts
+
+What about just pseudotime distribution
+
+
+```{r}
+p_linprob_vln <- srt_ti@meta.data %>%
+  arrange(desc(abs(lineage_probability2))) %>%
+  ggplot(aes(x = fct_reorder(sample_id_new, (pseudotime_scaled), median), y = pseudotime_scaled)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", alpha = 1) +
+  geom_quasirandom(size = 0.01, bandwidth = 3, aes(color = pseudotime_scaled)) +
+  guides(
+    x = guide_axis(angle = 90),
+    color = guide_colorbar(keywidth = 0.4, keyheight = 3)
+  ) +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  # scale_y_continuous(breaks = c(-1, 0, 1), labels = c("LUSC", "LUAD", "SCLC")) +
+  # scale_color_viridis_c(option = "turbo", breaks = c(-1, 1), labels = c("LUSC", "SCLC")) +
+  # scale_color_gradient2(high = colors$histology_predominant_short[["SCLC"]], low = colors$histology_predominant_short[["LUSC"]], mid = colors$histology_predominant_short[["LUAD"]], breaks = c(-1, -0.5, 0, 0.5, 1), labels = c("LUSC", "", "LUAD", "", "SCLC")) +
+  scale_color_viridis_c(option = "inferno") #+
+# labs(x = "Sample ID", y = "Lineage\nCommitment", color = "Lineage")
+
+p_linprob_vln <- ggrastr::rasterise(p_linprob_vln, layers = "Point", dpi = 300)
+p_linprob_vln
+```
+
+
+Restricted to the core adeno branch?
+
+```{r}
+p_linprob_vln <- srt_ti@meta.data %>%
+  arrange(desc(abs(lineage_probability2))) %>%
+  filter(lineage_class == "LUAD") %>%
+  ggplot(aes(x = fct_reorder(sample_id_new, (pseudotime_scaled), median), y = pseudotime_scaled)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black", alpha = 1) +
+  geom_quasirandom(size = 0.01, bandwidth = 3, aes(color = pseudotime_scaled)) +
+  guides(
+    x = guide_axis(angle = 90),
+    color = guide_colorbar(keywidth = 0.4, keyheight = 3)
+  ) +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  # scale_y_continuous(breaks = c(-1, 0, 1), labels = c("LUSC", "LUAD", "SCLC")) +
+  # scale_color_viridis_c(option = "turbo", breaks = c(-1, 1), labels = c("LUSC", "SCLC")) +
+  # scale_color_gradient2(high = colors$histology_predominant_short[["SCLC"]], low = colors$histology_predominant_short[["LUSC"]], mid = colors$histology_predominant_short[["LUAD"]], breaks = c(-1, -0.5, 0, 0.5, 1), labels = c("LUSC", "", "LUAD", "", "SCLC")) +
+  scale_color_viridis_c(option = "inferno") #+
+# labs(x = "Sample ID", y = "Lineage\nCommitment", color = "Lineage")
+
+p_linprob_vln <- ggrastr::rasterise(p_linprob_vln, layers = "Point", dpi = 300)
+p_linprob_vln
+```
+
+
+```{r, fig.width = 3, fig.height = 3}
+p1 <- srt_ti@meta.data %>%
+  ggplot(aes(x = luad_dediff, y = fct_reorder(cell_type_epi, -luad_dediff, median))) +
+  # geom_violin(scale = "width") +
+  ggrastr::rasterize(geom_quasirandom(aes(color = cell_type_epi), size = 0.1, alpha = 0.5, show.legend = F), dpi = 1000) +
+  geom_pointrange(
+    pch = 21,
+    stat = "summary", fatten = 2, color = "black", fill = "white", stroke = 0.5,
+    fun.min = function(z) {
+      quantile(z, 0.25)
+    },
+    fun.max = function(z) {
+      quantile(z, 0.75)
+    },
+    fun = median, position = position_dodge(width = 0.8)
+  ) +
+  guides(x = guide_axis(cap = "upper")) +
+  scale_color_manual(values = colors$cell_type_epi) +
+  scale_x_continuous(breaks = c(0, 1)) +
+  labs(x = "LUAD Dedifferentiation Score", y = "Epithelial cell state") +
+  theme(plot.margin = margin(1, 0, 1, 1, "mm"))
+p1
+```
+
+
+
+```{r}
+p1 <- FeaturePlot(srt_ti, features = "luad_dediff", reduction = "pca_genes", order = T, raster = F, pt.size = 0.05) +
+  scale_color_viridis_c(option = "inferno", breaks = c(0, 1), labels = c(0, 1)) +
+  NoAxes() +
+  guides(color = guide_colorbar(keywidth = 0.4, keyheight = 3))
+
+p2 <- FeaturePlot(srt_ti, features = "lineage_probability2", reduction = "pca_genes", order = T, raster = F, pt.size = 0.05) +
+  scale_color_gradient2() +
+  NoAxes() +
+  guides(color = guide_colorbar(keywidth = 0.4, keyheight = 3))
+
+p_list <- FeaturePlot(srt_ti, features = c("luad_dediff", "lineage_probability2"), reduction = "pca_genes", raster = F, order = T, combine = F, pt.size = 0.1) %>%
+  purrr::map(., .f = function(p) {
+    p +
+      scale_color_viridis_c(option = "inferno", breaks = c(0, 1), labels = c(0, 1)) +
+      NoAxes() +
+      guides(color = guide_colorbar(keywidth = 0.4, keyheight = 3))
+  })
+p_list
+```
+
+
+```{r, fig.width = 14, fig.height = 14}
+library(correlation)
+feats <- c("luad_dediff", "LUAD", "LUSC", "MAPK", "alveolar_malignant", "WONG_EMBRYONIC_STEM_CELL_CORE", "HALLMARK_MYC_TARGETS_V1", "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "TRAVAGLINI_LUNG_ALVEOLAR_EPITHELIAL_TYPE_2_CELL", "TRAVAGLINI_LUNG_PROLIFERATING_BASAL_CELL", "SCGB3A1", "SCGB3A2", "DSG3", "KRT13", "KRT6A", "SFTPC", "SFTPB")
+df <- bulk_exp(srt_ti, cell_type_col = "time_point", sample_id_col = "sample_id_new", features = feats)
+
+x <- correlation(df[df$time_point == "TN", ], select = feats, method = "spearman", p_adjust = "fdr")
+
+
+plot(summary(x)) +
+  guides(x = guide_axis(angle = 90))
+```
+
+
+Check everything
+
+```{r}
+all_feats <- c(names(all_paths), grep("_malignant", colnames(srt_ti@meta.data), value = T))
+all_feats <- c(all_feats[all_feats %in% colnames(srt_ti@meta.data)], "luad_dediff")
+df <- bulk_exp(srt_ti, cell_type_col = "time_point", sample_id_col = "sample_id_new", features = all_feats)
+
+
+cor_res <- Hmisc::rcorr(x = as.matrix(df[df$time_point == "TN", c("luad_dediff")]), y = as.matrix(df[df$time_point == "TN", all_feats[!all_feats == "luad_dediff"]]), type = "pearson")
+
+cor_res_df <- broom::tidy(cor_res) %>%
+  filter(column1 == "luad_dediff" | column2 == "luad_dediff") %>%
+  arrange(p.value)
+
+# x <- correlation(df[df$time_point == "TN",], select1 = "luad_dediff", select2 = all_feats[1:5], method = "spearman", p_adjust = "fdr")
+```
+
+
+```{r}
+df %>%
+  ggplot(aes(x = luad_dediff, y = alveolar_malignant)) +
+  geom_point(aes(color = time_point), size = 3) +
+  geom_smooth(method = "lm") +
+  ggpubr::stat_cor() +
+  scale_color_manual(values = colors$time_point)
+
+df %>%
+  ggplot(aes(x = luad_dediff, y = WONG_EMBRYONIC_STEM_CELL_CORE)) +
+  geom_point(aes(color = time_point), size = 3) +
+  geom_smooth(method = "lm") +
+  ggpubr::stat_cor() +
+  scale_color_manual(values = colors$time_point)
+
+df %>%
+  ggplot(aes(x = luad_dediff, y = TRAVAGLINI_LUNG_PROLIFERATING_BASAL_CELL)) +
+  geom_point(aes(color = time_point), size = 3) +
+  geom_smooth(method = "lm") +
+  ggpubr::stat_cor(method = "spearman") +
+  facet_grid(. ~ time_point) +
+  scale_color_manual(values = colors$time_point)
+```
+
+```{r}
+x <- FeatureScatter(srt_ti[, srt_ti$time_point == "TN"], feature1 = "luad_dediff", feature2 = "SFTA2")
+
+x
+```
+
+
+
+```{r}
+# x <- srt_ti@meta.data %>%
+#   # mutate(sample_id_new = factor(sample_id_new)) %>%
+#   group_by(time_point) %>%
+#   correlation::correlation(select1 = c("luad_dediff"), select2 = c("LUAD", "LUSC", "SCLC", "MAPK"))
+
+x %>%
+  ggplot(aes(x = Parameter1, y = Parameter2, color = r, size = -log10(p))) +
+  geom_point() +
+  scale_color_gradient2(limits = c(-0.5, 0.5), oob = scales::squish) +
+  facet_grid(. ~ Group, scales = "free", space = "free") +
+  guides(x = guide_axis(angle = 90))
+```
+
+
+# Transcriptional regulators
+
+## TF Activity
+
+Infer TF activity over pseudotime
+
+```{r}
+if (FALSE) {
+  library(decoupleR)
+  net <- decoupleR::get_collectri(
+    organism = "human",
+    split_complexes = FALSE
+  )
+
+  net
+
+  # Run ulm
+  acts <- decoupleR::run_ulm(
+    mat = mat_full,
+    net = net,
+    .source = "source",
+    .target = "target",
+    .mor = "mor",
+    minsize = 5
+  )
+
+  acts <- acts %>%
+    group_by(source) %>%
+    mutate(score_scaled = scale(score)[, 1])
+
+  acts <- acts %>%
+    separate(condition, into = c("lineage_no", "pseudotime_rank")) %>%
+    mutate(pseudotime = as.numeric(pseudotime_rank) / 100) %>%
+    mutate(lineage = factor(lineage_no, levels = c("lineage1", "lineage2"), labels = c("LUSC", "SCLC")))
+  acts <- arrange(acts, desc(pseudotime), lineage)
+  write.table(acts, file = here("results", "histotime_tf_activity.txt"), col.names = T, row.names = T, sep = "\t")
+}
+tf_act <- read.table(file = here("results", "histotime_tf_activity.txt"), header = T, sep = "\t")
+tf_act$gene <- tf_act$source
+```
+
+
+Spot check
+
+```{r}
+tf_act %>%
+  dplyr::filter(gene %in% c("MEIS1")) %>%
+  ggplot(aes(x = pseudotime, y = score, color = lineage, group = gene)) +
+  geom_line(linewidth = 1) +
+  labs(y = "Activity", x = "Psuedotime", linetype = "Lineage") +
+  # scale_x_continuous(limits = c(0, quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD",]$pseudotime_scaled, prob = c(0.975)))) +
+  scale_color_manual(values = colors$histology_predominant_short) +
+  # geom_vline(linetype = "dotted", xintercept = quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD",]$pseudotime_scaled, prob = c(0.975))) +
+  guides(linetype = guide_legend(override.aes = list(linewidth = 1))) +
+  scale_x_continuous(breaks = c(0, 1)) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    strip.background = element_blank(),
+    axis.line = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+  ) +
+  facet_grid(gene ~ lineage, scales = "free_y") +
+  NoLegend()
+```
+
+
+## Of dedifferentiation
+
+Pick which values to cut at
+
+```{r}
+srt_ti@meta.data %>%
+  ggplot(aes(x = lineage_class, y = pseudotime, fill = lineage_class)) +
+  geom_violin() +
+  geom_hline(yintercept = quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD", ]$pseudotime, prob = c(0.025, 0.975)))
+quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD", ]$pseudotime, prob = c(0.025, 0.975))
+```
+
+
+```{r}
+startRes <- startVsEndTest(sce_gam, pseudotimeValues = c(0, quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD", ]$pseudotime, prob = c(0.975))), l2fc = 0, lineages = FALSE)
+startRes$gene <- rownames(startRes)
+
+# chk <- startVsEndTest(sce_gam, pseudotimeValues = NULL, l2fc = 0, lineages = FALSE)
+
+# startRes <- startRes %>%
+#   mutate(pvalue_lineage1_adj = p.adjust(pvalue_lineage1),
+#          sig_lin1 = pvalue_lineage1_adj < 0.05,
+#          .after = pvalue_lineage1) %>%
+#   mutate(pvalue_lineage2_adj = p.adjust(pvalue_lineage2),
+#          sig_lin2 = pvalue_lineage2_adj < 0.05,
+#          .after = pvalue_lineage2) %>%
+#   mutate(sig_both = sig_lin1 & sig_lin2,
+#          pos_both = sign(logFClineage1) > 0 & sign(logFClineage2) > 0,
+#          neg_both = sign(logFClineage1) < 0 & sign(logFClineage2) < 0)
+
+
+# dediff_genes <- startRes %>%
+#   filter(sig_both & (pos_both | neg_both)) %>%
+#   rownames_to_column("gene")
+
+# Label TFs
+
+tfdf <- read.table(file = "https://humantfs.ccbr.utoronto.ca/download/v_1.01/DatabaseExtract_v_1.01.txt", header = T, sep = "\t", quote = "\"", strip.white = T, fill = T, check.names = F)
+tfdf <- janitor::clean_names(tfdf)
+
+table(tfdf$hgnc_symbol %in% rownames(srt_ti))
+
+tfdf$hgnc_symbol[!tfdf$hgnc_symbol %in% rownames(srt_ti)] <- Seurat::UpdateSymbolList(tfdf$hgnc_symbol[!tfdf$hgnc_symbol %in% rownames(srt_ti)])
+
+table(tfdf$hgnc_symbol %in% rownames(srt_ti))
+
+startRes$is_tf <- (startRes$gene %in% tfdf[tfdf$is_tf == "Yes", ]$hgnc_symbol)
+```
+
+
+Filter for significant genes
+
+```{r}
+dediff_tfs <- startRes %>%
+  filter(is_tf) %>%
+  rstatix::adjust_pvalue(method = "BH") %>%
+  rstatix::add_significance() %>%
+  arrange(pvalue.adj)
+dediff_tfs$logfc <- rowMeans(dediff_tfs[, c("logFClineage1", "logFClineage2")], na.rm = T)
+```
+
+```{r}
+# Filter for min log2fc and systematically plot
+glist <- dediff_tfs %>%
+  filter(logfc >= 2, pvalue.adj < 0.05) %>%
+  pull(gene)
+
+pls <- map(glist, .f = function(g) {
+  ysmooth_df_full %>%
+    group_by(gene) %>%
+    dplyr::filter(gene %in% g) %>%
+    ggplot(aes(x = time_scaled, y = log_counts, color = lineage, group = gene)) +
+    geom_line(linewidth = 1) +
+    labs(y = "Expression", title = g, x = "Psuedotime", linetype = "Lineage") +
+    # scale_x_continuous(limits = c(0, quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD",]$pseudotime_scaled, prob = c(0.975)))) +
+    scale_color_manual(values = colors$histology_predominant_short) +
+    geom_vline(linetype = "dotted", xintercept = quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD", ]$pseudotime_scaled, prob = c(0.975))) +
+    guides(linetype = guide_legend(override.aes = list(linewidth = 1))) +
+    scale_x_continuous(breaks = c(0, 1)) +
+    theme(
+      panel.border = element_rect(fill = NA, color = "black"),
+      strip.background = element_blank(),
+      axis.line = element_blank(),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+    ) +
+    facet_grid(gene ~ lineage, scales = "free_y") +
+    NoLegend()
+})
+names(pls) <- glist
+
+pdf(file = here("plots", "all_sig_logfc2pos_tfs_early_dediff.pdf"), width = 5, height = 2.5)
+print(pls)
+dev.off()
+```
+
+
+```{r}
+select_genes <- c(
+  "SOX4",
+  "NPAS3",
+  "RUNX1",
+  "AHR",
+  "POU6F2",
+  "MEIS1",
+  "EBF2",
+  "HMGA2",
+  "ARX"
+)
+```
+
+
+```{r}
+# gene = "SOX4"
+# p1 <- plotSmoothers(sce_gam, assay(sce_gam), gene = gene, lwd = 1, plotLineages = T) +
+#   labs(title = gene)
+# p1
+```
+
+```{r, fig.height = 10, fig.width = 5}
+ysmooth_df_full %>%
+  group_by(gene) %>%
+  dplyr::filter(gene %in% select_genes) %>%
+  ggplot(aes(x = time_scaled, y = log_counts, color = lineage, group = gene)) +
+  geom_line(linewidth = 1) +
+  labs(y = "Expression", x = "Psuedotime", linetype = "Lineage") +
+  # scale_x_continuous(limits = c(0, quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD",]$pseudotime_scaled, prob = c(0.975)))) +
+  scale_color_manual(values = colors$histology_predominant_short) +
+  geom_vline(linetype = "dotted", xintercept = quantile(srt_ti@meta.data[srt_ti$lineage_class == "LUAD", ]$pseudotime_scaled, prob = c(0.975))) +
+  guides(linetype = guide_legend(override.aes = list(linewidth = 1))) +
+  scale_x_continuous(breaks = c(0, 1)) +
+  theme(
+    panel.border = element_rect(fill = NA, color = "black"),
+    strip.background = element_blank(),
+    axis.line = element_blank(),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+  ) +
+  facet_grid(gene ~ lineage, scales = "free_y") +
+  NoLegend()
+```
+
+
+
+```{r, fig.width = 10, fig.height = 10}
+p <- FeaturePlot(srt_ti, features = select_genes, reduction = "pca_genes", raster = F, order = T, combine = T, pt.size = 0.1, max.cutoff = "q99") &
+  scale_color_viridis_c(option = "inferno") &
+  NoAxes() &
+  guides(color = guide_colorbar(keywidth = 0.4, keyheight = 3))
+p
+```
+
+
+```{r, fig.width =20, fig.height = 10}
+p <- VlnPlot(srt_ti, features = select_genes, pt.size = 0, group.by = "sample_id_new", sort = T)
+p
+```
+
+
+```{r, fig.width =5, fig.height = 4}
+p <- DotPlotter(srt_ti, features = c(select_genes, "TP63", "KRT6A"), group.by = "cell_type_epi", rotate_y_strip = T, cluster_groups = T)
+p
+```
+
+
+```{r, fig.width =5, fig.height = 10}
+p <- DotPlotter(srt_ti, features = select_genes, group.by = "sample_id_new", rotate_y_strip = T, cluster_groups = T)
+p
+```
+
+
+SOX4 
+
+```{r, fig.width = 6, fig.height = 4}
+df <- FetchData(srt_ti, vars = c("cell_type_epi", "SOX4"))
+# df <- VlnPlot_scCustom(srt_epi[,grepl("^PDC|^AT2", srt_epi$cell_type_epi)], colors_use = colors$cell_type_epi, features = "SFTPB", group.by = "cell_type_epi", plot_boxplot = T, sort = T, add.noise = F)$data
+p <- df %>%
+  # filter(grepl("^PDC|^AT2", cell_type_epi)) %>%
+  ggplot(aes(x = fct_reorder(cell_type_epi, -SOX4, median), y = SOX4)) +
+  geom_violin(scale = "width", aes(fill = cell_type_epi)) +
+  guides(x = guide_axis(angle = 45)) +
+  geom_boxplot(width = 0.1, fill = "white", outliers = F) +
+  # geom_pointrange(
+  #   stat = "summary", fatten = 2,
+  #   fun.min = function(z) {
+  #     quantile(z, 0.25)
+  #   },
+  #   fun.max = function(z) {
+  #     quantile(z, 0.75)
+  #   },
+  #   fun = median,
+  # ) +
+  scale_fill_manual(values = colors$cell_type_epi) +
+  theme_classic(base_size = 16) +
+  NoLegend() +
+  labs(x = "Celltype", y = "Expression", title = "SOX4") +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.margin = margin(2, 2, 2, 6, "mm")
+  )
+p
+```
+
+
+## Of each branch
+
+This is more confirmatory less priority I think
+
+```{r}
+# Test for different patterns between lineages
+pattern_res <- patternTest(sce_gam, l2fc = 2)
+pattern_res$gene <- rownames(pattern_res)
+
+pattern_res$is_tf <- (pattern_res$gene %in% tfdf[tfdf$is_tf == "Yes", ]$hgnc_symbol)
+
+
+pattern_res <- pattern_res %>%
+  filter(is_tf) %>%
+  rstatix::adjust_pvalue(method = "BH") %>%
+  rstatix::add_significance() %>%
+  arrange(pvalue) %>%
+  filter(pvalue.adj < 1e-4)
+```
+
+
+```{r}
+p1 <- ysmooth_df_full %>%
+  filter(gene %in% pattern_res$gene[1:5]) %>%
+  ggplot(aes(x = time_scaled, y = gene)) +
+  geom_tile(aes(fill = log_counts_standardized)) +
+  facet_grid(. ~ lineage, scales = "free") +
+  scale_fill_viridis_c(option = "inferno") +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), axis.line = element_blank(),
+    strip.background = element_blank(),
+    panel.border = element_rect(fill = NA, color = "black"),
+    legend.position = "bottom"
+  ) +
+  scale_x_continuous(expand = c(0, 0), labels = scales::breaks_extended(n = 2), breaks = c(0, 1)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  labs(x = "Histotime", y = "Genes", fill = "Expression") +
+  guides(fill = guide_colorbar(keywidth = 3, keyheight = 0.4))
+```
+
