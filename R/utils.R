@@ -185,3 +185,19 @@ umap_guides <- function(arrow_size = 3, units = "cm", ...) {
     y = umap_axis
   ))
 }
+
+
+#' @export
+update_metadata <- function(obj, metadata, match_by) {
+  new_meta <- obj@meta.data
+
+  cols <- colnames(metadata)[!colnames(metadata) == match_by]
+  new_meta[, cols] <- NULL
+
+  new_meta <- dplyr::left_join(new_meta, metadata, by = match_by)
+  rownames(new_meta) <- new_meta$cell_id
+
+  obj@meta.data <- new_meta
+  return(obj)
+}
+

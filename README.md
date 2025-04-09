@@ -4,6 +4,10 @@ This repository contains code related to the manuscript:
 
 > Zatzman, M., Quintanal-Villalonga, A. _et al_, Alveolar lineage divergence during targeted therapy in lung adenocarcinoma.
 
+## Overview
+
+This repository is structued as an installable R package. The `R` folder contains functions related to data processing, visualization, and other helper functions.   The `code` folder contains notebooks related to analysis steps. Explanations of these notebooks can be found within the `code` folder `README.md` file. 
+
 ## Data Availablility
 
 Raw sequencing data generated in this project has been deposited to the GEO Expression Omnibus under accession [GSE292469](link). 
