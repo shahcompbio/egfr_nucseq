@@ -6,63 +6,27 @@ author: "Matthew Zatzman"
 # Introduction
 
 ```{r setup}
-#| output: false
 library(tidyverse)
 library(here)
-library(ggbeeswarm)
-library(ggsci)
 library(ggthemes)
-library(glue)
-library(patchwork)
-library(cowplot)
-library(ggnewscale)
 library(ggh4x)
-library(ggtext)
-library(ComplexHeatmap)
-library(SingleCellExperiment)
-# library(BPCells)
+library(glue)
 library(Seurat)
-library(dittoSeq)
 devtools::load_all()
 
 markers <- load_markers()
 ```
 
 
-WHICH ARE LUAD VS LUSC!?
-
-$disease
-
 ```{r}
-luca <- readRDS(here("data", "external_data", "lc_atlas", "luca_extended_ondisk.rds"))
+luca <- readRDS(here("data", "luca_extended.rds"))
 
 luca <- luca[, luca$ann_coarse == "Epithelial cell"]
-# luca <- RunUMAP(luca, reduction = "scANVI", reduction.name = "umap_scanvi", dims = 1:10)
 
-scores <- read.table(file = here("results", glue("luca_ucell_signatures.txt.gz")), header = T, sep = "\t")
+scores <- read.table(file = here("data", "luca_ucell_signatures.txt.gz"), header = T, sep = "\t")
 rownames(scores) <- scores$cell_id
 scores$cell_id <- NULL
 luca <- AddMetaData(luca, scores)
-```
-
-
-```{r, fig.width = 18, fig.height = 13}
-# luca <- RunUMAP(luca, reduction = "scVI", reduction.name = "umap_scvi", dims = 1:10)
-
-p1 <- DimPlot(luca, reduction = "umap_scanvi", group.by = "ann_fine", label = T)
-p2 <- DimPlot(luca, reduction = "umap_scanvi", group.by = "cell_type_major", label = T)
-p3 <- DimPlot(luca, reduction = "umap_scanvi", group.by = "cell_type", label = T)
-p4 <- DimPlot(luca, reduction = "umap_scanvi", group.by = "cell_type_tumor", label = T)
-
-pcomb <- wrap_plots(p1, p2, p3, p4)
-pcomb
-```
-
-
-```{r, fig.width = 18, fig.height = 13}
-p1 <- FeaturePlot(luca, reduction = "umap_scanvi", features = c("LUAD_GIRARD", "LUSC_GIRARD", "SCLC_CCLE", "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES"), order = T, max.cutoff = "q95", min.cutoff = "q5") &
-  scale_color_viridis_c(option = "cividis")
-p1
 ```
 
 
@@ -110,70 +74,7 @@ mean_scores_long <- mean_scores %>%
 ```
 
 
-```{r, fig.width = 10, fig.height = 18}
-df <- mean_scores_long %>%
-  group_by(ann_fine, Pathway) %>%
-  summarize(mean_mean_exp = mean(mean_exp)) %>%
-  group_by(Pathway) %>%
-  mutate(mean_exp_scaled = scale(mean_mean_exp)[, 1]) %>%
-  ungroup()
-
-mat <- df %>%
-  pivot_wider(id_cols = "ann_fine", names_from = "Pathway", values_from = "mean_exp_scaled") %>%
-  as.data.frame() %>%
-  column_to_rownames("ann_fine") %>%
-  as.matrix()
-
-
-df %>%
-  ggplot(aes(x = ann_fine, y = Pathway)) +
-  geom_tile(aes(fill = mean_exp_scaled)) +
-  scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red")) +
-  scale_y_dendrogram(hclust = hclust(dist(t(mat)))) +
-  scale_x_dendrogram(hclust = hclust(dist(mat))) +
-  scale_x_discrete(position = "top") +
-  guides(x = guide_axis(angle = 90))
-```
-
-
-```{r}
-mean_scores %>%
-  ggplot(aes(x = LUAD_GIRARD, y = REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES)) +
-  geom_point() +
-  geom_smooth(method = "lm") +
-  ggpubr::stat_cor() +
-  facet_wrap(~ann_fine) +
-  theme_few() +
-  labs(x = "LUAD", y = "MAPK")
-```
-
-
-
-```{r}
-mean_scores %>%
-  ggplot(aes(x = LUAD_GIRARD, y = REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES)) +
-  geom_point() +
-  geom_smooth(method = "lm") +
-  ggpubr::stat_cor() +
-  facet_wrap(~ann_fine) +
-  theme_few() +
-  labs(x = "LUAD", y = "MAPK")
-```
-
-
-```{r, fig.width = 15, fig.height = 10}
-mean_scores %>%
-  ggplot(aes(x = LUAD_GIRARD, y = REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES)) +
-  geom_point() +
-  geom_smooth(method = "lm") +
-  ggpubr::stat_cor() +
-  facet_grid(origin ~ ann_fine) +
-  theme_few() +
-  labs(x = "LUAD", y = "MAPK")
-```
-
-
-```{r, fig.width = 4, fig.height = 3}
+```{r, fig.width = 8, fig.height = 3}
 df <- mean_scores %>%
   filter(ann_fine == "Cancer cells" & disease %in% c("lung adenocarcinoma"))
 
@@ -183,11 +84,9 @@ p1 <- df %>%
   geom_smooth(method = "lm", show.legend = F, se = F) +
   ggpubr::stat_cor(show.legend = F, size = 2.75, label.x.npc = 0.45, label.y.npc = 0.075) +
   facet_grid(. ~ glue("Single Cell LuCA Atlas\nLUAD samples ({nrow(df)})")) +
-  scale_color_bluebrown_d(reverse = T, breaks = c("early", "advanced"), labels = c("Early", "Advanced")) +
+  see::scale_color_bluebrown_d(reverse = T, breaks = c("early", "advanced"), labels = c("Early", "Advanced")) +
   theme_few() +
   labs(x = "Reactome Nuclear MAPK", y = "LUAD Signature", color = "Tumor Stage")
-ggsave(p1, file = here("plots", "luca_atlas_mapk_cor.pdf"), width = 4, height = 3)
-p1
 
 
 df2 <- mean_scores %>%
@@ -197,80 +96,14 @@ p2 <- df2 %>%
   ggplot(aes(x = REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES, y = LUAD_GIRARD, color = ann_fine)) +
   geom_point() +
   geom_smooth(method = "lm", show.legend = F, se = F) +
-  ggpubr::stat_cor(show.legend = F, size = 2.75, label.x.npc = 0.5, label.y.npc = 0.8) +
+  ggpubr::stat_cor(show.legend = F, size = 2.75, label.x.npc = 0.4, label.y.npc = 0.9) +
   facet_grid(. ~ glue("Single Cell LuCA Atlas\nNormal samples ({nrow(df2)})")) +
   scale_color_manual(values = c("#E64B35FF", "#4DBBD5FF"), breaks = c("Alveolar cell type 1", "Alveolar cell type 2"), labels = c("AT1", "AT2")) +
   theme_few() +
   labs(x = "Reactome Nuclear MAPK", y = "LUAD Signature", color = "Cell Type")
-p2
 
 pcomb <- p1 | p2
 ggsave(pcomb, file = here("plots", "luca_atlas_mapk_cor_plus_norm.pdf"), width = 8, height = 3)
-
 pcomb
 ```
-
-
-```{r}
-mean_scores %>%
-  filter(ann_fine == "Cancer cells") %>%
-  ggplot(aes(x = LUSC_GIRARD, y = REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES)) +
-  geom_point() +
-  geom_smooth(method = "lm") +
-  ggpubr::stat_cor() +
-  facet_grid(. ~ disease) +
-  theme_few() +
-  labs(x = "LUSC", y = "MAPK")
-```
-
-
-
-```{r, fig.width = 6, fig.height = 5}
-mut_type_df <- mean_scores %>%
-  pivot_longer(cols = ends_with("_mutation"), names_to = "Gene", values_to = "Mutated") %>%
-  na.omit() %>%
-  mutate(Mutated = ifelse(Mutated == "mutated", 1, 0))
-mut_type_df %>%
-  ggplot(aes(x = Gene, y = sample)) +
-  geom_tile(aes(fill = factor(Mutated))) +
-  guides(x = guide_axis(angle = 90)) +
-  scale_fill_manual(values = c("white", "black"))
-```
-
-```{r}
-mut_type_df2 <- mut_type_df %>%
-  distinct(sample, Gene, Mutated) %>%
-  filter(Mutated == 1) %>%
-  select(sample, Gene) %>%
-  mutate(Gene = gsub("_mutation", "", Gene))
-```
-
-
-```{r}
-mean_scores %>%
-  left_join(mut_type_df2) %>%
-  filter(ann_fine == "Cancer cells") %>%
-  pivot_longer(cols = c("LUAD_GIRARD", "LUSC_GIRARD", "SCLC_CCLE"), names_to = "Pathway", values_to = "Score") %>%
-  ggplot(aes(x = Gene, y = Score)) +
-  geom_boxplot(aes(color = Pathway), position = position_dodge(width = 1)) +
-  scale_fill_ptol() +
-  scale_color_ptol() +
-  geom_quasirandom(aes(color = Pathway), dodge.width = 1)
-```
-
-What about in normals
-
-```{r}
-mean_scores %>%
-  filter(origin == "normal") %>%
-  pivot_longer(cols = c("LUAD_GIRARD", "LUSC_GIRARD", "SCLC_CCLE"), names_to = "Pathway", values_to = "Score") %>%
-  ggplot(aes(x = ann_fine, y = Score)) +
-  geom_boxplot(aes(color = Pathway), position = position_dodge(width = 1)) +
-  scale_fill_ptol() +
-  scale_color_ptol() +
-  geom_quasirandom(aes(color = Pathway), dodge.width = 1) +
-  facet_grid(. ~ Pathway) +
-  guides(x = guide_axis(angle = 90))
-```
-
 

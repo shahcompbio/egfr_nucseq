@@ -10,33 +10,14 @@ author: "Matthew Zatzman"
 library(tidyverse)
 library(glue)
 library(Seurat)
-# library(monocle3)
 library(slurmR)
 library(here)
 ```
 
-```{r}
-# luca <- readRDS(here("data", "external_data", "lc_atlas", "luca_extended.rds"))
-#
-# # Turn into on disk
-# library(BPCells)
-#
-# mat <- luca[["RNA"]]$counts
-# mat <- as(mat, "IterableMatrix")
-# mat <- convert_matrix_type(mat)
-# rownames(mat) <- luca[["RNA"]]@meta.features$feature_name
-# write_matrix_dir(mat, dir = here("data", "luca_bp"), overwrite = T)
-#
-# luca_ondisk <- CreateSeuratObject(counts = open_matrix_dir(here("data", "luca_bp")), meta.data = luca@meta.data)
-# luca_ondisk <- NormalizeData(luca_ondisk)
-# luca_ondisk@reductions <- luca@reductions
-#
-# saveRDS(luca_ondisk, file = here("data", "external_data", "lc_atlas", "luca_extended_ondisk.rds"))
-```
 
 
 ```{r}
-pathways <- read.table(here("metadata", "pathways", "egfr_pathways.txt"), header = T, sep = "\t")
+pathways <- read.table(here("data", "egfr_pathways.txt"), header = T, sep = "\t")
 
 pathways <- split(pathways$Gene, pathways$pathway)
 ```
@@ -45,7 +26,6 @@ pathways <- split(pathways$Gene, pathways$pathway)
 opts_slurmR <- slurmR::opts_slurmR
 opts_slurmR$reset()
 opts_slurmR$set_opts(partition = "componc_cpu")
-# opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/run/munge/,/etc/slurm/,/usr/lib64/slurm,/usr/lib64/libmunge.so.2' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
 opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
 tmp_dir <- here("logs", "score_sigs")
 dir.create(tmp_dir, recursive = T, showWarnings = F)

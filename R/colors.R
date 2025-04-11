@@ -12,6 +12,16 @@ load_colors <- function() {
       "Fibroblast" = "#6a3d9a",
       "Other" = "#b3b3b3"
     ),
+    "epi_type" = c(
+      c(
+        "AT1-like" = "#E64B35FF",
+        "AT2-like" = "#4DBBD5FF",
+        "Cycling" = "#00A087FF",
+        "Mixed" = "#3C5488FF",
+        "Mixed 2" = "#F39B7FFF",
+        "Multiciliated" = "#8491B4FF"
+      )
+    ),
     "time_point" = c(
       "TN" = "#7aa77f",
       "MRD" = "#94b6d2",
@@ -26,6 +36,15 @@ load_colors <- function() {
       "Male" = "#57aed1",
       "Female" = "#F33A6A"
     ),
+    # "histo_cols" = c(
+    #   "LUAD" = "#82271A",
+    #   "LUAD-dominant" = "#E64B35FF",
+    #   "LUSC" = "#005B7B",
+    #   "LUSC-dominant" = "#4DBBD5FF",
+    #   "SCLC" = "#005F3D",
+    #   "SCLC-dominant" = "#00A087FF",
+    #   "Mixed" = "#FFDC91FF"
+    # ),
     "histology_predominant" = c(
       "Lung Adenocarcinoma" = "#88CCEE",
       "Lung Squamous Cell Carcinoma" = "#661100",
@@ -50,8 +69,23 @@ load_colors <- function() {
       "Other" = "#007756"
     ),
     "tf" = c(
-      "TRUE" = "grey10",
-      "FALSE" = "grey90"
+      "TRUE" = "black",
+      "FALSE" = "white",
+      "Detected" = "black",
+      "NA" = "grey60",
+      "Undetected" = "grey60",
+      "Not applicable" = "grey60"
+    ),
+    "mech_resistance" = c(
+      "MAPK-sustained" = "orange",
+      "Plasticity" = "maroon",
+      "Other" = "navy"
+    ),
+    "mor" = c(
+      "On Target" = "orange",
+      "Off Target" = "red",
+      "Histologic Transformation" = "maroon",
+      "Unknown" = "navy"
     ),
     "site_of_tissue_simple" = c(
       "Primary" = "#56B4E9",
@@ -132,18 +166,18 @@ load_colors <- function() {
       PD30 = "#FF8320"
     ),
     "cell_type_epi" = c(
-      Multiciliated = "#E69F00",
       `AT1-like` = "#56B4E9",
-      `PDC 4` = "#009E73",
       `AT2-like` = "#F0E442",
-      Cycling = "#0072B2",
+      `AT2-like PDTC` = "#CC79A7",
       `Basal-like` = "#D55E00",
-      `AT2-like PDC` = "#CC79A7",
-      `PDC 1` = "#666666",
-      `PDC 3` = "#AD7700",
+      "PDTC" = "#007756",
+      `PDTC 1` = "#666666",
+      `PDTC 2` = "#007756",
+      `PDTC 3` = "#AD7700",
+      `PDTC 4` = "#009E73",
+      Multiciliated = "#E69F00",
       Neuroendocrine = "#1C91D4",
-      `PDC 2` = "#007756",
-      "PDC" = "#007756",
+      Cycling = "#0072B2",
       `Hepatocyte-like` = "#D5C711",
       `Atypical` = "#005685"
     )
