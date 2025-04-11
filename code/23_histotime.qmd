@@ -1040,7 +1040,7 @@ p <- srt_ti@meta.data %>%
   ) +
   ggpubr::geom_pwc(label = "p.signif", tip.length = 0, vjust = 0.5) +
   coord_cartesian(clip = "off") +
-  labs(x = "Treatment Naive", y = "LUAD dedifferentiation")
+  labs(x = "Progressive Disease", y = "LUAD dedifferentiation")
 p
 ggsave(p, file = here("plots", "MAPKalt_PD_luad_dediff.pdf"), width = 1.75, height = 2)
 ```
