@@ -396,15 +396,6 @@ egfr_mat <- egfr_hits %>%
   t() %>%
   memoSort()
 
-# egfr_hits %>%
-#   ggplot(aes(x = fct_relevel(sample_id_old, colnames(egfr_mat)), y = fct_rev(fct_relevel(variant, rownames(egfr_mat))))) +
-#   geom_tile() +
-#   facet_grid(.~time_point, space = "free", scales = "free") +
-#   guides(x = guide_axis(angle = 90)) +
-#   labs(x = "Sample ID", y = "EGFR Variant") +
-#   ggthemes::theme_pander() +
-#   theme(panel.border = element_rect(fill = NA, color = "black"))
-
 egfr_hits %>%
   ggplot(aes(x = fct_relevel(sample_id_new, colnames(egfr_mat)), y = fct_rev(fct_relevel(variant, rownames(egfr_mat))))) +
   geom_tile() +
@@ -414,15 +405,6 @@ egfr_hits %>%
   theme_pander() +
   theme(panel.border = element_rect(fill = NA, color = "black"), strip.clip = "off")
 
-# library(legendry)
-# egfr_hits %>%
-#   ggplot(aes(x = fct_relevel(sample_id, colnames(egfr_mat)), y = interaction(variant, egfr_cat))) +
-#   geom_tile() +
-#   facet_nested(type ~ time_point, space = "free", scales = "free") +
-#   guides(x = guide_axis(angle = 90), y = "axis_nested") +
-#   labs(x = "Sample ID", y = "EGFR Mutation") +
-#   theme_pander() +
-#   theme(panel.border = element_rect(fill = NA, color = "black"), strip.clip = "off")
 ```
 
 
@@ -455,7 +437,6 @@ egfr_hit_plot <- egfr_hits %>%
   labs(y = "Sample ID", x = NULL) +
   theme_clean() +
   theme(axis.line.x = element_blank(), axis.line.y = element_blank(), panel.border = element_rect(fill = NA, color = "black"), plot.background = element_blank(), strip.placement = "outside", strip.background = element_part_rect(side = "l", color = "black", fill = NA, linetype = "solid"), strip.background.x = element_part_rect(side = "t", color = "black", fill = NA, linetype = "solid"))
-# p1
 
 # Instead do as proportion of the timepoints
 df_egfr_cat_prop <- egfr_hits %>%
@@ -466,8 +447,7 @@ df_egfr_cat_prop <- egfr_hits %>%
   distinct(time_point, type_name, time_point, n_type, n_tp, prop, type) %>%
   filter(!is.na(type)) %>%
   mutate(time_point = fct_relevel(time_point, levels(db$metadata$time_point)))
-# %>%
-# filter()
+
 
 
 egfr_hit_plot_top <- df_egfr_cat_prop %>%
@@ -495,10 +475,8 @@ pegfr
 ### Final Swimmers Combined
 
 ```{r, fig.width = 11, fig.height = 13}
-# pcomb <- swimmers_plot + meta_plot + plot_layout(widths = c(1, 0.5))
 pcomb <- plot_grid(swimmers_plot, meta_plot, align = "h", nrow = 1, ncol = 2, rel_widths = c(1, 0.9))
 pcomb
-# ggsave(pcomb, file = here("plots", "swimmers_plus_annos.pdf"), width = 11, height = 13)
 ```
 
 ### Full version
@@ -549,16 +527,9 @@ pcomb_ext <- plot_grid(
   axis = "tb"
 )
 
-
-# pcomb_ext <- (plot_spacer() / swimmers_plot) | (plot_spacer() / meta_plot +   guides(x.sec = guide_axis()))
-
 pcomb_ext
 
 ggsave(pcomb_ext, file = here("plots", "swimmers_plus_annos_muts.pdf"), width = 10, height = 14.3)
-
-
-# (egfr_hit_plot_top + theme(plot.margin = margin(r = 3, unit = "lines"))) + egfr_hit_plot + plot_layout(ncol = 1, heights = c(0.125, 1)) & theme(panel.spacing = unit(0.2, "lines"))
-#
 ```
 
 ##### Top Proportion
@@ -609,11 +580,8 @@ p4 <- DimPlot(srt, group.by = "cell_type", reduction = "umap_nb") +
   scale_color_manual(values = colors$cell_type, breaks = names(colors$cell_type), labels = label_num_generator(srt$cell_type)) +
   labs(title = "Cell Type") +
   theme(plot.margin = margin(1, 1, 1, 1, "mm"))
-# ggsave(cohort_umap, file = here("plots", "cohort_umap_cell_types_nb.pdf"), width = 6, height = 5)
-
 
 pcomb <- p4 + p2 + p1 + p3 + plot_layout(ncol = 2) & theme(aspect.ratio = 1, legend.box.margin = margin(), legend.margin = margin())
-# pcomb
 ggsave(pcomb, file = here("plots", "cohort_umap_combined_nobatch.pdf"), width = 14, height = 8)
 ```
 
@@ -645,8 +613,6 @@ p4 <- DimPlot(srt, group.by = "cell_type", reduction = "umap") +
   NoAxes() +
   scale_color_manual(values = colors$cell_type, breaks = names(colors$cell_type), labels = label_num_generator(srt$cell_type)) +
   labs(title = "Cell Type")
-# ggsave(cohort_umap, file = here("plots", "cohort_umap_cell_types_nb.pdf"), width = 6, height = 5)
-
 
 pcomb <- wrap_plots(p4, p2, p1, p3) & theme(aspect.ratio = 1)
 pcomb
@@ -673,8 +639,8 @@ p4 <- DimPlot(srt, group.by = "cell_type", reduction = "umap") +
   NoAxes() +
   scale_color_manual(values = colors$cell_type, breaks = names(colors$cell_type)) +
   labs(title = "Cell Type")
-# ggsave(cohort_umap, file = here("plots", "cohort_umap_cell_types_nb.pdf"), width = 6, height = 5)
-#
+
+
 cohort_umap_tumor_cells <- DimPlot(srt, group.by = "is_tumor_cell", cols = list("TRUE" = as.character(colors$cell_type["Tumor Cell"]), "FALSE" = "grey90")) +
   labs(title = NULL) +
   # theme_void() +
@@ -683,8 +649,6 @@ cohort_umap_tumor_cells <- DimPlot(srt, group.by = "is_tumor_cell", cols = list(
   NoAxes() +
   NoLegend() +
   labs(title = "Tumor Cells")
-# ggsave(cohort_umap_tumor_cells, file = here("plots", "cohort_umap_tumor_cells.pdf"), width = 6, height = 5)
-# cohort_umap_tumor_cells
 
 
 
@@ -709,7 +673,6 @@ names(ct_markers) <- map(names(ct_markers), .f = function(ct) {
 library(ggtext)
 
 srt$cell_type_col <- factor(srt$cell_type, levels = levels(srt$cell_type), labels = glue("<b style='color:{colors$cell_type[levels(srt$cell_type)]}'>{levels(srt$cell_type)}</b>"))
-# srt$cell_type_col <- fct_rev(srt$cell_type_col)
 
 
 pl <- DotPlotter(srt, features = ct_markers, group.by = "cell_type_col", cluster_groups = F, rotate_y_strip = F) +
@@ -736,8 +699,6 @@ spec_pls <- map(names(db$spec), .f = function(l) {
   df <- db$spec[[l]]
 
   p1 <- df %>%
-    # group_by(cid1, cid2) %>%
-    # summarize(cid1_purity = mean(cid1_purity)) %>%
     filter(cid2 != "Other") %>%
     ggplot(aes(x = fct_relevel(cid2, cls_order), y = cid1_purity)) +
     geom_violin(scale = "width", aes(fill = cid2), show.legend = F) +
@@ -807,7 +768,6 @@ df <- df_raw %>%
   filter(is_tumor_cell)
 
 devtools::load_all()
-# Group by timepoint and calculate scaled density per group
 df <- df %>%
   group_by(time_point, cell_type) %>%
   mutate(density = get_density(UMAP1, UMAP2, n = 500)) %>%
@@ -820,21 +780,14 @@ df$time_point_col <- factor(df$time_point,
   labels = glue("<b style='color:{colors$time_point[levels(df$time_point)]}'>{levels(df$time_point)}</b>")
 )
 
-
-# lab_cents <- get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated")
-
 p <- df %>%
   ungroup() %>%
   arrange((density_scaled)) %>%
   ggplot(aes(x = UMAP1, y = UMAP2)) +
-  # scattermore::geom_scattermore(data = df_raw, color = "grey50", alpha = 0.5) +
   ggrastr::rasterize(geom_point(aes(color = density_scaled), size = 0.1), dpi = 600) +
   facet_wrap(~time_point_col) +
   scale_color_gradientn(colours = viridis::turbo(10)) +
   guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) +
-  # geom_label_repel(data = get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated"), aes(x = x, y = y, label = RNA_cluster_labels_coarse), size = 3, label.padding = unit(0.1, "lines")) +
-  # NoAxes() +
-  # coord_cartesian(clip = "off") +
   theme(
     strip.background = element_blank(),
     strip.text.x = element_markdown(size = 16),
@@ -860,9 +813,6 @@ p <- df %>%
   facet_wrap(~time_point_col, ncol = 1) +
   scale_color_gradientn(colours = viridis::turbo(10), name = "Density") +
   guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) +
-  # geom_label_repel(data = get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated"), aes(x = x, y = y, label = RNA_cluster_labels_coarse), size = 3, label.padding = unit(0.1, "lines")) +
-  # NoAxes() +
-  # coord_cartesian(clip = "off") +
   theme(
     strip.background = element_blank(),
     strip.text.x = element_markdown(size = 16),
@@ -902,7 +852,6 @@ df$time_point_col <- factor(df$time_point,
 )
 
 
-# lab_cents <- get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated")
 
 p <- df %>%
   ungroup() %>%
@@ -912,9 +861,6 @@ p <- df %>%
   facet_wrap(~time_point_col) +
   scale_color_gradientn(colours = viridis::turbo(10), name = "Density") +
   guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) +
-  # geom_label_repel(data = get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated"), aes(x = x, y = y, label = RNA_cluster_labels_coarse), size = 3, label.padding = unit(0.1, "lines")) +
-  # NoAxes() +
-  # coord_cartesian(clip = "off") +
   theme(
     strip.background = element_blank(),
     strip.text.x = element_markdown(size = 16),
@@ -955,22 +901,15 @@ df$time_point_col <- factor(df$time_point,
   labels = glue("<b style='color:{colors$time_point[levels(df$time_point)]}'>{levels(df$time_point)}</b>")
 )
 
-
-# lab_cents <- get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated")
-
 p <- df %>%
   filter(TP53mut != "NA") %>%
   ungroup() %>%
-  # mutate(TP53mut = ifelse(TP53mut, "TP53mut", "TP53wt")) %>%
   arrange((density_scaled)) %>%
   ggplot(aes(x = UMAP1, y = UMAP2)) +
   ggrastr::rasterise(geom_point(aes(color = density_scaled), size = 0.1), dpi = 600) +
   facet_grid(TP53mut ~ time_point_col) +
   scale_color_gradientn(colours = viridis::turbo(10), name = "Density") +
   guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) +
-  # geom_label_repel(data = get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated"), aes(x = x, y = y, label = RNA_cluster_labels_coarse), size = 3, label.padding = unit(0.1, "lines")) +
-  # NoAxes() +
-  # coord_cartesian(clip = "off") +
   theme(
     strip.background = element_blank(),
     strip.text.x = element_markdown(size = 16),
@@ -991,16 +930,12 @@ p
 p <- df %>%
   filter(TP53mut != "NA", time_point == "TN") %>%
   ungroup() %>%
-  # mutate(TP53mut = ifelse(TP53mut, "TP53mut", "TP53wt")) %>%
   arrange((density_scaled)) %>%
   ggplot(aes(x = UMAP1, y = UMAP2)) +
   ggrastr::rasterise(geom_point(aes(color = density_scaled), size = 0.1), dpi = 600) +
   facet_grid(time_point_col ~ fct_rev(TP53mut)) +
   scale_color_gradientn(colours = viridis::turbo(10), name = "Density") +
   guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) +
-  # geom_label_repel(data = get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated"), aes(x = x, y = y, label = RNA_cluster_labels_coarse), size = 3, label.padding = unit(0.1, "lines")) +
-  # NoAxes() +
-  # coord_cartesian(clip = "off") +
   theme(
     strip.background = element_blank(),
     strip.text.y = element_markdown(size = 16),
@@ -1035,15 +970,10 @@ df <- df %>%
   mutate(density = get_density(UMAP1, UMAP2, n = 500)) %>%
   mutate(density_scaled = standardize(density))
 
-
-
 df$time_point_col <- factor(df$time_point,
   levels = levels(df$time_point),
   labels = glue("<b style='color:{colors$time_point[levels(df$time_point)]}'>{levels(df$time_point)}</b>")
 )
-
-
-# lab_cents <- get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated")
 
 p <- df %>%
   ungroup() %>%
@@ -1053,9 +983,6 @@ p <- df %>%
   facet_grid(MAPKalt ~ time_point_col) +
   scale_color_gradientn(colours = viridis::turbo(10), name = "Density") +
   guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) +
-  # geom_label_repel(data = get_label_centers(srt, group_var = "RNA_cluster_labels_coarse", reduced_dim = "RNA_umap_rpca_integrated"), aes(x = x, y = y, label = RNA_cluster_labels_coarse), size = 3, label.padding = unit(0.1, "lines")) +
-  # NoAxes() +
-  # coord_cartesian(clip = "off") +
   theme(
     strip.background = element_blank(),
     strip.text.x = element_markdown(size = 16),
@@ -1091,7 +1018,6 @@ p <- srt@meta.data %>%
   ) +
   ggpubr::geom_pwc(tip.length = 0, symnum.args = symnum_0.1_star, label = "p.adj.signif", aes(group = time_point), hide.ns = T, vjust = 0.5, method = "wilcox_test", step.increase = 0.05) +
   coord_cartesian(clip = "off") #+
-# theme(legend.position = "top", plot.margin = margin(0, 1, 1, 1, "mm"), legend.title.position = "top", legend.title = element_text(hjust = 0.5), legend.box.margin = margin(), legend.box.spacing = unit(0, "mm"), legend.box.background = element_blank(), legend.background = element_blank())
 p
 ggsave(p, file = here("plots", "cohort_timepoint_cell_type_prop.pdf"), width = 4.5, height = 2.5)
 ```
@@ -1324,97 +1250,6 @@ names(meta_programs) <- janitor::make_clean_names(names(meta_programs))
 ```
 
 
-### Explore
-
-#### Unknown PDC state
-
-Mainly in four patients
-
-```{r}
-table(srt_epi@meta.data[srt_epi$cell_type_epi == "PD9/PD27 unk.", ]$sample_id_new) %>% sort(decreasing = T)
-```
-
-```{r}
-epi_marker_f <- here("results", "epi_type_degs.txt")
-if (FALSE) {
-  epi_degs <- FindAllMarkers(srt_epi, group.by = "cell_type_epi", min.pct = 0.05, logfc.threshold = 0.25, only.pos = T, max.cells.per.ident = 1000)
-  write.table(epi_degs, file = epi_marker_f, col.names = T, row.names = F, sep = "\t")
-}
-epi_degs <- read.table(epi_marker_f, header = T, sep = "\t")
-```
-
-
-
-```{r, fig.width = 18, fig.height = 4}
-epi_degs_top <- epi_degs %>%
-  group_by(cluster) %>%
-  slice_head(n = 10)
-
-p <- DotPlotter(srt_epi, features = split(epi_degs_top$gene, epi_degs_top$cluster), group.by = "cell_type_epi", rotate_y_strip = T)
-p
-```
-
-
-### General Exploratory
-
-```{r}
-DimPlot_scCustom(srt_epi, group.by = "cell_type_epi", label = T, colors_use = colors$cell_type_epi, label.size = 3)
-```
-
-
-```{r, fig.width = 8, fig.height = 5}
-p <- FeaturePlot_scCustom(srt_epi, features = c("SFTPB", "KRT5", "KRT17", "DSG3", "KRT6A", "SCGB3A2"), colors_use = viridis::rocket(20), order = T, raster = F, raster.dpi = c(256, 256), num_columns = 3, max.cutoff = "q99", pt.size = 0.01) &
-  guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) &
-  umap_theme() &
-  NoAxes() &
-  # NoLegend() &
-  theme(aspect.ratio = 1, plot.title = element_text(hjust = 0.5, face = "bold"))
-p
-```
-
-
-```{r}
-p <- VlnPlot_scCustom(srt_epi, features = c("SFTPB", "KRT5", "KRT17", "DSG3", "KRT6A", "SCGB3A2"), group.by = "cell_type_epi", pt.size = 0, plot_boxplot = T)
-p
-```
-
-
-```{r}
-x <- Plot_Density_Custom(seurat_object = srt_epi, features = c("TRAVAGLINI_LUNG_ALVEOLAR_EPITHELIAL_TYPE_1_CELL", "TRAVAGLINI_LUNG_ALVEOLAR_EPITHELIAL_TYPE_2_CELL", "TRAVAGLINI_LUNG_BASAL_CELL", "TRAVAGLINI_LUNG_NEUROENDOCRINE_CELL", "TRAVAGLINI_LUNG_PROLIFERATING_BASAL_CELL"), viridis_palette = "cividis", joint = F, combine = F)
-x
-```
-
-
-
-```{r, fig.width = 10, fig.height = 8}
-Plot_Density_Custom(seurat_object = srt_epi, features = c("SCGB3A1", "SCGB3A2"), joint = T, viridis_palette = "cividis")
-
-
-x <- Plot_Density_Custom(seurat_object = srt_epi, features = c("KRT6A", "KRT13", "KRT14", "DSG3"), joint = T, viridis_palette = "cividis")
-
-
-# AT0
-# alveolar type 0 cells (n=1,440, expressing STFPB+, SCGB3A2+, SFTPChigh and SCGB3A1low) and the closely related preterminal bronchiole secretory cells (n=4,393, expressing SFTPB+, SCGB3A2+, SFTPClow and SCGB3A1high, together with alveolar type 0 cells called transitional club-AT2 cells)33,34
-x <- Plot_Density_Custom(seurat_object = srt_epi, features = c("SFTPB", "SCGB3A2", "SFTPC"), joint = T, viridis_palette = "cividis")
-
-x <- Plot_Density_Custom(seurat_object = srt_epi, features = c("SFTPB", "SCGB3A2", "SCGB3A1"), joint = T, viridis_palette = "cividis")
-```
-
-
-```{r, fig.width = 10, fig.height = 8}
-# Hillock basal
-x <- Plot_Density_Custom(seurat_object = srt_epi, features = c("KRT6A", "KRT13", "KRT14", "DSG3", "TP63"), viridis_palette = "cividis", joint = T)
-x
-```
-
-
-```{r, fig.width = 10, fig.height = 8}
-# Hillock luminal
-x <- Plot_Density_Custom(seurat_object = srt_epi, features = c("KRT6A", "KRT13", "KRT14", "DSG3", "SERPINB2"), viridis_palette = "cividis", joint = T)
-x
-```
-
-
 ### Figure Plots
 
 #### UMAP
@@ -1435,7 +1270,6 @@ p1_leg <- df_leg %>%
   scale_fill_manual(values = colors$cell_type_epi) +
   scale_color_manual(values = colors$cell_type_epi) +
   coord_cartesian(clip = "off") +
-  # facet_grid(fct_relevel(cell_type_l2, "Myeloid", "TNK", "B/Plasma", "Stroma", "Other") ~ ., scales = "free", space = "free", switch = "y") +
   theme(
     strip.placement = "outside",
     strip.background.y = element_part_rect(side = "r", fill = NA),
@@ -1463,9 +1297,6 @@ p1 <- DimPlot(srt_epi, reduction = "umap", group.by = "cell_type_epi", shuffle =
     bg.r = 0.1,
     position = ggpp::position_nudge_center(center_x = 2, center_y = 2, direction = "radial", x = 0, y = 0)
   ) +
-  # scale_color_manual(values = colors$site_of_tissue_simple, breaks = names(colors$site_of_tissue_simple), labels = label_num_generator(srt$site_of_tissue_simple)) +
-  #   ggrepel::geom_text_repel(color = "black", data = lab_cents, aes(x = x, y = y, label = cell_type_l5), size = 3, fontface = "bold", bg.colour = "white", bg.r = .1, force = 0.1, max.iter = 1e9, min.segment.length = Inf, max.time = 1, max.overlaps = Inf) +
-
   scale_color_manual(values = colors$cell_type_epi, labels = label_num_generator(srt_epi$cell_type_epi), breaks = levels(srt_epi$cell_type_epi)) +
   NoAxes() +
   NoLegend() +
@@ -1543,7 +1374,7 @@ ggsave(dp_f, file = here("plots", "hlca_marker_dotplot.pdf"), width = 14, height
 ```{r, fig.width = 6, fig.height = 4}
 glist <- c("SFTPB", "SFTPC", "SCGB3A2", "KRT13", "KRT6A", "DSG3")
 
-x <- Plot_Density_Custom(seurat_object = srt_epi, features = glist, viridis_palette = "inferno", joint = F, combine = F) # %>%
+x <- Plot_Density_Custom(seurat_object = srt_epi, features = glist, viridis_palette = "inferno", joint = F, combine = F)
 
 
 names(x) <- glist
@@ -1559,10 +1390,8 @@ pls <- map(names(res), .f = function(gene) {
     arrange(.data[[gene]]) %>%
     ggplot(aes(x = umap_1, y = umap_2)) +
     scattermore::geom_scattermore(aes(color = .data[[gene]]), pixels = c(256, 256)) +
-    # geom_point(aes(color = feature), size = 0.5) +
     scale_color_viridis_c(option = "inferno") +
     labs(title = gene, color = "Density")
-  # p <- ggrastr::rasterise(p, dpi = 300)
 })
 
 pcomb <- pls %>%
@@ -1570,7 +1399,6 @@ pcomb <- pls %>%
   guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) &
   umap_theme() &
   NoAxes() &
-  # NoLegend() &
   theme(aspect.ratio = 1, plot.title = element_text(hjust = 0.5, face = "bold")) &
   labs(color = "Expression\nDensity")
 
@@ -1582,26 +1410,14 @@ ggsave(pcomb, filename = here("plots", "epi_exp_dens.pdf"), width = 6, height = 
 #### SFTPB Expression
 
 ```{r, fig.width = 2.5, fig.height = 3}
-# p_all <- VlnPlot_scCustom(srt_epi, colors_use = colors$cell_type_epi, features = "SFTPB", group.by = "cell_type_epi", plot_boxplot = T, sort = T, add.noise = F)
-# p_all
 df <- FetchData(srt_epi, vars = c("cell_type_epi", "SFTPB"))
-# df <- VlnPlot_scCustom(srt_epi[,grepl("^PDC|^AT2", srt_epi$cell_type_epi)], colors_use = colors$cell_type_epi, features = "SFTPB", group.by = "cell_type_epi", plot_boxplot = T, sort = T, add.noise = F)$data
 p <- df %>%
   filter(grepl("^PDC|^AT2", cell_type_epi)) %>%
   ggplot(aes(x = fct_reorder(cell_type_epi, -SFTPB, median), y = SFTPB)) +
   geom_violin(scale = "width", aes(fill = cell_type_epi)) +
   guides(x = guide_axis(angle = 45)) +
   geom_boxplot(width = 0.1, fill = "white", outliers = F) +
-  # geom_pointrange(
-  #   stat = "summary", fatten = 2,
-  #   fun.min = function(z) {
-  #     quantile(z, 0.25)
-  #   },
-  #   fun.max = function(z) {
-  #     quantile(z, 0.75)
-  #   },
-  #   fun = median,
-  # ) +
+
   scale_fill_manual(values = colors$cell_type_epi) +
   theme_classic(base_size = 16) +
   NoLegend() +
@@ -1637,15 +1453,7 @@ p3 <- srt_epi@meta.data %>%
   labs(fill = "Timepoint", y = "Proportion") +
   guides(fill = guide_legend(keywidth = 0.5, keyheight = 0.5))
 
-
-# p4 <- srt_epi@meta.data %>%
-#   ggplot(aes(x = cell_type_epi)) +
-#   geom_bar(aes(fill = fct_rev(cell_type)), position = "fill") +
-#   scale_fill_manual(values = colors$cell_type) +
-#   guides(x = guide_axis(angle = 45))
-
 p4 <- srt_epi@meta.data %>%
-  # filter(!grepl("PD9", cell_type_epi)) %>%
   add_count(cell_type_epi, cell_type, name = "n1") %>%
   add_count(cell_type_epi, name = "n2") %>%
   mutate(prop = n1 / n2) %>%
@@ -1669,11 +1477,9 @@ p5 <- srt_epi@meta.data %>%
 gap_size <- 2
 
 pcomb <- wrap_plots(
-  # free(p1, type = "space", side = "r"),
   p1 + theme(plot.margin = margin(t = 4, r = 2, b = gap_size, l = 2, "mm")),
   free(p3 + theme(plot.margin = margin(t = gap_size, r = 2, b = gap_size, l = 2, "mm")), type = "space", side = "r"),
   free(p2 + theme(plot.margin = margin(t = gap_size, r = 2, b = gap_size, l = 2, "mm")), type = "space", side = "r"),
-  # p2,
   free(p5 + theme(plot.margin = margin(t = gap_size, r = 2, b = gap_size, l = 2, "mm")), type = "space", side = "r"),
   free(p4 + theme(plot.margin = margin(t = gap_size, r = 2, b = 2, l = 4, "mm")), type = "space", side = "l"),
   ncol = 1, axes = "collect_x"
@@ -1695,15 +1501,9 @@ pcomb
 This version is proportion of each pts tumor cells only
 
 ```{r, fig.width = 5, fig.height = 3}
-# my_comparisons <- list(c("Pre", "On"), c("Pre", "PD"), c("On", "PD"))
-# my_comparisons <- list(c("Pre", "PD"))
-
-
 use_col <- "cell_type_epi"
 
 df <- srt_epi@meta.data %>%
-  # filter(!grepl("PD9", cell_type_epi)) %>%
-  # mutate(RNA_cluster_labels = fct_rev(RNA_cluster_labels)) %>%
   filter(cell_type == "Tumor Cell") %>%
   add_count(.data[[use_col]], time_point, sample_id_new, name = "epi_type_n") %>%
   add_count(sample_id_new, name = "sample_n") %>%
@@ -1721,8 +1521,6 @@ p_df <- df %>%
   ) %>%
   filter(p.adj < 0.1) %>%
   rstatix::add_xy_position()
-
-
 
 theme(legend.position = "none", strip.background = element_blank(), strip.text.y = element_text(size = 10), strip.clip = "off", strip.placement = "outside", panel.spacing = unit(0, "mm")) +
   scale_y_continuous(expand = expansion(mult = c(0.05, 0.05))) +
@@ -2231,68 +2029,6 @@ ggsave(pcomb2, file = here("plots", "luad_mapk_select_cors_vertical.pdf"), width
 # pcomb
 ```
 
-Omnibus
-
-```{r}
-corres <- all_sig_summary_wide %>%
-  select(all_of(colnames(all_sig_summary_wide)[3:ncol(all_sig_summary_wide)])) %>%
-  as.matrix() %>%
-  Hmisc::rcorr(type = "pearson")
-
-library(ggcorrplot)
-cormat <- corres$r
-
-pmat <- corres$P
-
-pdat <- ggcorrplot(
-  corr = cormat,
-  type = "lower",
-  hc.order = T,
-  p.mat = pmat,
-  insig = "pch"
-)$data %>%
-  rstatix::add_significance(p.col = "pvalue") %>%
-  rstatix::adjust_pvalue(p.col = "pvalue", method = "bonferroni") %>%
-  rstatix::add_significance(p.col = "pvalue.adj") %>%
-  mutate(sig = ifelse(pvalue.adj < 0.05, "*", "ns"))
-
-p <- ggcorrplot(
-  corr = cormat,
-  type = "lower",
-  hc.order = T,
-  legend.title = bquote("Pearson's R")
-)
-
-ylab_anno <- data.frame(lab = levels(pdat$Var1), y = levels(pdat$Var1), x = (1:ncol(cormat)) - 1)
-axis_tx_sz <- 7
-
-p <- p +
-  geom_text(data = pdat[pdat$pvalue.adj < 0.05, ], aes(label = sig), size = 3, nudge_y = -0.3) +
-  # labs(title = str_split(nm, pattern = "__", simplify = T)[2]) +
-  guides(x = guide_axis(angle = 90)) +
-
-  geom_text(inherit.aes = F, data = ylab_anno, aes(x = x, y = y, label = lab), hjust = 1, size = axis_tx_sz * 0.33) +
-  coord_cartesian(clip = "off") +
-  theme(
-    axis.text.y.left = element_blank(),
-    axis.text.x.bottom = element_text(size = axis_tx_sz), plot.margin = margin(1, 1, 1, 10, unit = "lines"),
-    panel.grid = element_blank()
-  )
-p
-```
-
-
-```{r}
-cor_res <- all_sig_summary_wide %>%
-  correlation::correlation(select = colnames(all_sig_summary_wide)[3:ncol(all_sig_summary_wide)])
-
-p <- plot(cor_res) +
-  ggraph::scale_edge_color_gradient2(low = scales::muted("blue"), high = scales::muted("red"))
-
-p2 <- plot(summary(cor_res), show_data = "points") +
-  guides(x = guide_axis(angle = 90))
-```
-
 ### Within sample correlations
 
 ```{r}
@@ -2382,17 +2118,6 @@ p
 ```
 
 
-
-```{r}
-attributes(x)$modelframe %>%
-  ggplot(aes(x = REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES, y = LUAD)) +
-  geom_density2d_filled() +
-  ggpubr::stat_cor(method = "spearman") +
-  scattermore::geom_scattermore(pointsize = 1, pixels = c(256, 256)) +
-  geom_smooth(method = "lm")
-```
-
-
 ### MAPKalt LUAD
 
 First just use IMPACT definitions
@@ -2432,8 +2157,6 @@ p1 <- srt_tum@meta.data %>%
     },
     fun = median, position = position_dodge(width = 0.8), orientation = "y"
   ) +
-  # facet_grid(. ~ secondary_mapk_binned, scales = "free", space = "free") +
-  # guides(x = guide_axis(angle = 90)) +
   labs(y = "Sample", x = "LUAD signature score") +
   scale_fill_manual(values = colors$time_point) +
   theme(
@@ -2493,99 +2216,11 @@ cnv_df_long <- filter(cnv_df_long, inferCNV_amp) %>%
 cnv_df_add <- cnv_df_long %>%
   filter(Gene %in% c("EGFR", "MET", "ERBB2", "FGFR1", "FGFR2", "FGFR3", "FGFR4", "PIK3CA", "BRAF", "KRAS")) %>%
   pivot_wider(id_cols = "sample_id", names_from = "inferCNV_amp_conf", values_from = "Gene", values_fn = function(x) paste0(x, collapse = ";"), values_fill = "", names_prefix = "infercnv_")
-
-test <- left_join(db$metadata, cnv_df_add)
 ```
 
 
-```{r}
-p0 <- test %>%
-  filter(time_point == "PD", sample_id_new %in% srt_tum@meta.data$sample_id_new) %>%
-  select(sample_id, sample_id_new, has_impact, EGFR_Primary, EGFR_Secondary, MAPKalt, infercnv_low, infercnv_high) %>%
-  mutate(sample_id_new = fct_relevel(sample_id_new, samp_ord)) %>%
-  mutate(useInfer = sample_id %in% useinfer) %>%
-  # arrange(desc(sample_id_new)) %>%
-  gt::gt(rowname_col = "sample_id_new")
-pcomb <- wrap_table(p0, space = "fixed") + p1
-pcomb
-```
-
 
 ```{r}
-p0 <- test %>%
-  filter(sample_id_new %in% srt_tum@meta.data$sample_id_new) %>%
-  select(sample_id, sample_id_new, has_impact, EGFR_Primary, EGFR_Secondary, MAPKalt, infercnv_low, infercnv_high) %>%
-  mutate(sample_id_new = fct_relevel(sample_id_new, samp_ord)) %>%
-  mutate(useInfer = sample_id %in% useinfer) %>%
-  # arrange(desc(sample_id_new)) %>%
-  gt::gt(rowname_col = "sample_id_new")
-```
-
-Use this table to assign samples as secondary mapk or not
-
-```{r}
-p <- VlnPlot(srt_tum[, srt_tum$time_point == "PD"], group.by = "sample_id_new", sort = T, features = c(tier1, tier2), pt.size = 0, combine = F)
-names(p) <- c(tier1, tier2)
-```
-
-
-TODO: Add for Pre and On
-
-```{r}
-secondary_mapk <- c(
-  "PD1" = "EGFR_amp",
-  "PD2" = "EGFR_amp",
-  "PD3" = "EGFR_amp, ALK_fus",
-  "PD4" = "MET_ampinf, BRAF_ampinf, EGFR_ampinf", # check focal amp signal -- these are whole chr events
-  "PD5" = "EGFR_amp, KIT_amp",
-  "PD6" = "NA",
-  "PD7" = "EGFR_amp", # ROS1 high
-  "PD8" = "MET_amp",
-  "PD9" = "EGFR_amp, KRAS_amp",
-  "PD10" = "MAP2K4_W175*", # Does this count? ROS1 high
-  "PD11" = "ERBB2_amp, NF1_Q1235*", # ERBB2 not highly expressed, unclear if it belongs
-  "PD12" = "MAP3K1_Q535*", # Does this count?
-  "PD14" = "MET_ampinf", # Strange -- annotated as on-target from clinical table but not sure why -- different exon19 event
-  "PD15" = "MET_amp",
-  "PD16" = "EGFR_amp, MET_ampinf", # MET seems real inferCNV
-  "PD17" = "ALK_fus, EGFR_ampinf",
-  "PD18" = "NA", # No MET
-  "PD20" = "NA", # No IMPACT
-  "PD21" = "BRAF_fus",
-  "PD22" = "EGFR_amp",
-  "PD23" = "NA", # RET expression
-  "PD24" = "NA",
-  "PD25" = "NA", # Bit of KRAS
-  "PD26" = "EGFR_C797S", # LUSC transformed; RAC1 high
-  "PD27" = "EGFR_amp",
-  "PD28" = "FGFR1_ampinf",
-  "PD29" = "MAPK1_amp", # inferCNV agrees
-  "PD30" = "MET_ampinf", # Need infercnv, met amp possibly
-  "MRD1" = "NA",
-  "MRD2" = "EGFR_amp",
-  "MRD5" = "EGFR_amp",
-  "MRD6" = "NA"
-)
-
-# Replace names
-
-names(secondary_mapk) <- sample_id_map$sample_id_new[match(names(secondary_mapk), sample_id_map$sample_id_new_v1)]
-
-mapk_df <- enframe(secondary_mapk, name = "sample_id", value = "secondary_mapk")
-write.table(mapk_df, file = here("tables", "secondary_mapk.txt"), quote = F, sep = "\t", row.names = F, col.names = T)
-no_mapk <- names(which(secondary_mapk == "NA"))
-```
-
-
-```{r}
-srt_tum$secondary_mapk <- srt_tum@meta.data %>%
-  mutate(secondary_mapk = case_when(
-    time_point %in% c("TN", "MRD") ~ NA,
-    sample_id_new %in% no_mapk ~ "Unknown",
-    .default = "MAPKalt"
-  )) %>%
-  pull(secondary_mapk)
-
 samp_ord <- srt_tum@meta.data %>%
   filter(time_point == "PD") %>%
   mutate(sample_id_new = fct_reorder(sample_id_new, -LUAD, median)) %>%
@@ -2719,10 +2354,6 @@ pcomb
 Psuedobulk exp heatmap
 
 ```{r, fig.width = 6, fig.height = 3}
-# feats <- c(
-#   "EGFR", "MET", "ALK", "BRAF", "ERBB2", "ERBB3", "FGFR1", "FGFR2", "FGFR3", "KIT", "KRAS",
-#   "ASCL1", "NEUROD1", "VIM", "IGF1R", "CDC42", "IGF1R", "ROS1", "PIK3CA", "NOTCH1", "MYC", "AKT1", "AXL", "YAP1"
-# )
 feats <- c("EGFR", "MET", "ALK", "BRAF", "ERBB2", "FGFR1", "KIT", "KRAS")
 mapk_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id_new", meta_cols = c("time_point", "secondary_mapk"), features = feats)
 
@@ -2796,7 +2427,6 @@ pcomb
 Do a model with MAPKalt vs not for the three histologies, then a model for each mutation's association with LUSC and SCLC
 
 ```{r}
-# library(lme4)
 library(tidyr)
 library(broom.mixed)
 
@@ -2972,11 +2602,9 @@ if (FALSE) {
 
   devtools::load_all()
   sig_exp_df <- sig_exp_df %>%
-    # filter(time_point == "PD") %>%
     mutate(across(all_of(c("LUAD", "LUSC", "SCLC")), ~ standardize(.x)))
 
   sig_exp_df$secondary_mapk[is.na(sig_exp_df$secondary_mapk)] <- "Unknown"
-  # sig_exp_df$secondary_mapk[sig_exp_df$time == "Pre"] <- "N/A"
 
   library(ggtern)
 
