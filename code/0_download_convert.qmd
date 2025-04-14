@@ -25,12 +25,29 @@ file_list <- list(
 
 stopifnot("Files missing" = all(unlist(lapply(file_list, file.exists))))
 
+# Create on disk representation of the full matrix
+# This will greatly speed up data loading and reduce memory requirements
+var_meta <- schard::h5ad2data.frame(file_list$cohort, name = "var")
+
+mat <- BPCells::open_matrix_anndata_hdf5(file_list$cohort, group = "raw/X")
+rownames(mat) <- var_meta$gene
+mat <- convert_matrix_type(mat)
+write_matrix_dir(mat, dir = here("data", "egfr_ondisk"), overwrite = T)
+# Reload here. We will use this matrix for all objects
+mat <- open_matrix_dir(here("data", "egfr_ondisk"))
 
 walk(names(file_list), .f = function(name) {
   cli::cli_alert_info("Converting {name}")
-  srt <- h5ad2seurat(file_list[[name]], use.raw = F)
+  srt <- h5ad2seurat(file_list[[name]], use.raw = F, load.X = F)
   
   names(srt@reductions) <- gsub("_$", "", gsub("^X", "", names(srt@reductions)))
+  
+  srt[["RNAV5"]] <- CreateAssay5Object(counts = mat[,colnames(srt)])
+  
+  srt[["RNA"]] <- srt[["RNAV5"]]
+  srt[["RNAV5"]] <- NULL
+  
+  srt <- NormalizeData(srt)
   
   saveRDS(srt, file = here("data", glue("egfr_{name}.rds")))
 })

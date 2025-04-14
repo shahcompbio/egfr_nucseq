@@ -20,11 +20,8 @@ library(ggtext)
 library(ComplexHeatmap)
 library(scCustomize)
 library(SingleCellExperiment)
-# library(BPCells)
 library(Seurat)
 library(dittoSeq)
-# library(SeuratObject)
-# library(SeuratDisk)
 library(scatools)
 raster.dpi <- c(1000, 1000)
 
@@ -58,25 +55,20 @@ srt_epi <- db$srt_epi
 ## Pathways
 
 ```{r}
-pathways <- read.table(here("metadata", "pathways", "egfr_pathways_annotations.txt"), header = T, sep = "\t")
-mapk_paths <- filter(pathways, category == "MAPK")$pathway
-tum_paths <- c("LUAD", "LUSC", "SCLC")
+# pathways <- read.table(here("metadata", "pathways", "egfr_pathways_annotations.txt"), header = T, sep = "\t")
+# mapk_paths <- filter(pathways, category == "MAPK")$pathway
+# tum_paths <- c("LUAD", "LUSC", "SCLC")
 
-srt_tum$LUAD <- srt_tum$LUAD_GIRARD
-srt_tum$LUSC <- srt_tum$LUSC_GIRARD
-srt_tum$SCLC <- srt_tum$SCLC_CCLE
-srt_tum$MAPK <- srt_tum$REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES
+# srt_epi$LUAD <- srt_epi$LUAD_GIRARD
+# srt_epi$LUSC <- srt_epi$LUSC_GIRARD
+# srt_epi$SCLC <- srt_epi$SCLC_CCLE
+# srt_epi$MAPK <- srt_epi$REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES
 
-srt_epi$LUAD <- srt_epi$LUAD_GIRARD
-srt_epi$LUSC <- srt_epi$LUSC_GIRARD
-srt_epi$SCLC <- srt_epi$SCLC_CCLE
-srt_epi$MAPK <- srt_epi$REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES
+# pathways$pathway[pathways$pathway == "LUAD_GIRARD"] <- "LUAD"
+# pathways$pathway[pathways$pathway == "LUSC_GIRARD"] <- "LUSC"
+# pathways$pathway[pathways$pathway == "SCLC_CCLE"] <- "SCLC"
 
-pathways$pathway[pathways$pathway == "LUAD_GIRARD"] <- "LUAD"
-pathways$pathway[pathways$pathway == "LUSC_GIRARD"] <- "LUSC"
-pathways$pathway[pathways$pathway == "SCLC_CCLE"] <- "SCLC"
-
-pathways_v2 <- read.table(here("metadata", "pathways", "egfr_pathways_v2.txt"), header = T, sep = "\t") # Additional pathways
+pathways <- read.table(here("data", "egfr_pathways.txt"), header = T, sep = "\t") # Additional pathways
 ```
 
 

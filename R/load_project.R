@@ -1,6 +1,7 @@
 #' @export
 load_project <- function(cohort_obj = here::here("data/egfr_cohort.rds"),
                          epi_obj = here::here("data/egfr_epi.rds"),
+                         histo_obj = here::here("data/egfr_histo.rds"),
                          infercnv_obj = here::here("data/egfr_cohort_cnv.rds"),
                          # metadata_sheet = "data/supplemental_tables.xlsx",
                          # impact_obj = "impact_data.rds",
@@ -49,17 +50,26 @@ load_project <- function(cohort_obj = here::here("data/egfr_cohort.rds"),
   if (!is.null(epi_obj)) {
     srt_epi <- readRDS(epi_obj) %>%
       Seurat::UpdateSeuratObject()
+    # Temporary patch. The epi object needs to have this variable up front
+    srt_epi$cell_type_epi <- srt$cell_type_epi[match(colnames(srt_epi), colnames(srt))]
   } else {
     srt_epi <- NULL
+  }
+
+  if (!is.null(epi_obj)) {
+    srt_histo <- readRDS(histo_obj) %>%
+      Seurat::UpdateSeuratObject()
+  } else {
+    srt_histo <- NULL
   }
 
   db <- list(
     srt = srt,
     srt_epi = srt_epi,
-    infercnv = infercnv,
-    markers = markers,
+    srt_histo = srt_histo,
+    # infercnv = infercnv,
     # metadata = metadata,
-    impact_data = impact_data,
+    # impact_data = impact_data,
     spec = sp_tabs
   )
 
