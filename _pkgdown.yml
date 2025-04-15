@@ -15,6 +15,8 @@ navbar:
     vignettes:
       text: Vignettes
       menu:
+      - text: Main Plotting Code
+        href: articles/99_plots.html
       - text: Histotime Analysis
         href: articles/23_histotime.html
       - text: IMPACT Analysis
@@ -23,6 +25,5 @@ navbar:
         href: articles/41_luca_analysis.html
       - text: TCGA/CPTAC Aanalysis
         href: articles/42_tcga_cptac_analysis.html
-      - text: Main Plotting Code
-        href: articles/99_plots.html
+
 
