@@ -57,11 +57,7 @@ srt_ti <- readRDS(here("paper_data", "egfr_histo.rds"))
 sce_gam <- readRDS(here("paper_data", "sce_gam_v2.rds"))
 
 srt_ti$time_point <- fct_relevel(srt_ti$time_point, "TN", "MRD", "PD")
-```
 
-# Curves
-
-```{r}
 pseudo.paths <- slingPseudotime(sce_ti)
 # Taking the rowMeans just gives us a single pseudo-time for all cells. Cells
 # in segments that are shared across paths have similar pseudo-time values in
@@ -69,6 +65,11 @@ pseudo.paths <- slingPseudotime(sce_ti)
 sce_ti$pseudotime <- rowMeans(pseudo.paths, na.rm = TRUE)
 srt_ti$pseudotime <- sce_ti$pseudotime
 srt_ti$pseudotime_scaled <- standardize(srt_ti$pseudotime)
+```
+
+# Curves
+
+```{r}
 embedded <- embedCurves(sce_ti, "PCA_GENES")
 embedded <- slingCurves(embedded)
 
@@ -738,7 +739,7 @@ anno_df <- srt_ti@meta.data %>%
   mutate(site_of_tissue_simple = factor(site_of_tissue_simple, levels = names(colors$site_of_tissue_simple))) %>%
   mutate(has_impact = as.logical(has_impact))
 anno_df$tp53mut[!anno_df$has_impact] <- "NA"
-anno_df$mapk_alt[!anno_df$has_impact | anno_df$time_point == "TN"] <- "NA"
+anno_df$mapk_alt[anno_df$has_impact == "FALSE" | anno_df$time_point %in% c("TN", "MRD")] <- "NA"
 anno_df$rb1mut[!anno_df$has_impact] <- "NA"
 
 p_anno <- anno_df %>%
@@ -785,7 +786,7 @@ p_anno <- anno_df %>%
   new_scale_fill() +
   geom_tile(aes(y = "MAPKalt", fill = mapk_alt), color = "black", show.legend = F) +
   scale_fill_manual(
-    values = c("TRUE" = "black", "FALSE" = "white", "NA" = "grey60"), breaks = c("TRUE", "FALSE", "NA"),
+    values = c("MAPKalt" = "black", "Unknown" = "white", "NA" = "grey60"), breaks = c("TRUE", "FALSE", "NA"),
     labels = c("Detected", "Undetected", "Not applicable"),
     guide = "none"
   ) +

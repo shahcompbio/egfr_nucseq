@@ -24,9 +24,12 @@ library(glue)
 library(patchwork)
 library(cowplot)
 library(ggnewscale)
+library(eulerr)
 library(ggh4x)
 library(ggtext)
 library(ComplexHeatmap)
+library(tidyr)
+library(broom.mixed)
 library(scCustomize)
 library(SingleCellExperiment)
 library(Seurat)
@@ -65,6 +68,8 @@ metadata$facets_purity <- as.numeric(metadata$facets_purity)
 metadata$facets_frac_loh <- as.numeric(metadata$facets_frac_loh)
 metadata$facets_wgd <- as.logical(metadata$facets_wgd)
 metadata$time_point <- fct_relevel(metadata$time_point, "TN", "MRD", "PD")
+metadata$mapk_alt[metadata$sample_id == "PD20"] <- "Unknown" # Need to fix this upstream - sample w/o impact but inferCNV is used for this as well and this sample was negative
+
 
 # We need to load additional metadata to complete the swimmers plot
 addtl_meta <- read.table(file = here("paper_data", "metadata_update_mar_2025.txt"), header = T, sep = "\t", quote = "\"")
@@ -550,8 +555,8 @@ p4 <- DimPlot(srt, group.by = "cell_type", reduction = "umapnb") +
   labs(title = "Cell Type") +
   theme(plot.margin = margin(1, 1, 1, 1, "mm"))
 
-ggsave(pcomb, file = here("plots", "cohort_umap_combined_nobatch.pdf"), width = 14, height = 8)
 pcomb <- p4 + p2 + p1 + p3 + plot_layout(ncol = 2) & theme(aspect.ratio = 1, legend.box.margin = margin(), legend.margin = margin())
+ggsave(pcomb, file = here("plots", "cohort_umap_combined_nobatch.pdf"), width = 14, height = 8)
 pcomb
 ```
 
@@ -571,7 +576,7 @@ p2 <- DimPlot(srt, reduction = "umap", group.by = "sample_id") +
   NoAxes() +
   labs(title = "Patient")
 
-p3 <- DimPlot(srt, reduction = "umap", group.by = "time_point", order = "On") +
+p3 <- DimPlot(srt, reduction = "umap", group.by = "time_point", order = "MRD") +
   umap_theme() +
   NoAxes() +
   scale_color_manual(values = colors$time_point, breaks = names(colors$time_point), labels = label_num_generator(srt$time_point)) +
@@ -1610,10 +1615,10 @@ srt_tum <- srt_epi[, srt_epi$is_tumor_cell]
 ```
 
 
-### Pathway overlaps?
+### Pathway overlaps
 
 ```{r}
-plist <- split(pathways_v2$Gene, pathways_v2$pathway)
+plist <- split(pathways$Gene, pathways$pathway)
 
 meta_programs_df <- read.table(file = "https://raw.githubusercontent.com/mjz1/meta_programs_tirosh/refs/heads/main/tirosh_mp_patched.txt", header = T, sep = "\t")
 
@@ -1625,24 +1630,6 @@ meta_programs <- map(meta_programs, .f = function(x) {
 })
 
 names(meta_programs) <- janitor::make_clean_names(names(meta_programs))
-
-sel_paths <- c("LUAD_GIRARD", "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES", "BIOCARTA_MAPK_PATHWAY", "KEGG_MAPK_SIGNALING_PATHWAY")
-
-plist_sel <- list(
-  "Alveolar" = meta_programs$malignant$alveolar,
-  "LUAD" = plist$LUAD_GIRARD,
-  "Nuclear MAPK (Reactome)" = plist$REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES,
-  "MAPK (KEGG)" = plist$KEGG_MAPK_SIGNALING_PATHWAY,
-  "MAPK (Biocarta)" = plist$BIOCARTA_MAPK_PATHWAY
-)
-
-plist_sel <- map(plist_sel, unique)
-
-library(eulerr)
-fit <- euler(plist_sel)
-pdf(here("plots", "mapk_path_overlaps.pdf"), width = 5, height = 5)
-plot(fit, quantities = TRUE, legend = T)
-dev.off()
 
 
 plist_sel <- list(
@@ -1657,22 +1644,23 @@ plist_sel <- list(
 
 plist_sel <- map(plist_sel, unique)
 
-library(eulerr)
 fit <- euler(plist_sel)
 pdf(here("plots", "mapk_path_overlaps_extended.pdf"), width = 7, height = 7)
 plot(fit, quantities = TRUE, legend = F)
 dev.off()
+plot(fit, quantities = TRUE, legend = F)
+
 ```
 
 
 ### MAPK correlations
 
-Supervised pathway correlations
+#### Psuedobulked
 
 ```{r, fig.width = 9, fig.height = 3}
 paths <- c("Nuclear MAPK (Reactome)", "MAPK (Biocarta)", "MAPK (KEGG)")
 all_sig_summary_wide <- all_sig_summary %>%
-  pivot_wider(id_cols = c("sample_id_new", "time_point"), names_from = pathway, values_from = Score)
+  pivot_wider(id_cols = c("sample_id", "time_point"), names_from = pathway, values_from = Score)
 
 
 
@@ -1701,81 +1689,17 @@ pcomb
 ```
 
 
-```{r}
-paths <- c("Nuclear MAPK (Reactome)", "MAPK (Biocarta)", "MAPK (KEGG)")
-all_sig_summary_wide <- all_sig_summary %>%
-  pivot_wider(id_cols = c("sample_id_new", "time_point"), names_from = pathway, values_from = Score)
-
-
-
-pls <- map(paths, .f = function(pth) {
-  p <- all_sig_summary_wide %>%
-    ggplot(aes(x = .data[[pth]], y = .data[["Alveolar Signature"]])) +
-    stat_ellipse(
-      data = all_sig_summary_wide[all_sig_summary_wide$time_point != "MRD", ],
-      aes(fill = time_point),
-      type = "t",
-      geom = "polygon",
-      alpha = 0.3, show.legend = F
-    ) +
-    geom_point(aes(fill = time_point), pch = 21, stroke = 0.5, size = 2.5) +
-    geom_line(stat = "smooth", method = "lm", color = "#063970", se = F, linewidth = 1.25, alpha = 0.75) +
-    ggpubr::stat_cor() +
-    scale_fill_manual(values = colors$time_point, breaks = names(colors$time_point)) +
-    # scale_color_manual(values = colors$time_point) +
-    theme_classic() +
-    labs(y = "Alveolar Signature", fill = "Timepoint", x = pth) +
-    guides(fill = guide_legend(override.aes = list(size = 3.5)))
-})
-
-pcomb <- wrap_plots(pls, nrow = 1, guides = "collect", axes = "collect") & theme(panel.border = element_rect(fill = NA, color = "black"), axis.line = element_blank())
-ggsave(pcomb, file = here("plots", "alveolar_mapk_select_cors.pdf"), width = 8, height = 2.75)
-pcomb
-```
-
-LUAD vs alveolar
-
-```{r}
-p <- all_sig_summary_wide %>%
-  ggplot(aes(x = LUAD, y = .data[["Alveolar Signature"]])) +
-  stat_ellipse(
-    data = all_sig_summary_wide[all_sig_summary_wide$time_point != "MRD", ],
-    aes(fill = time_point),
-    type = "t",
-    geom = "polygon",
-    alpha = 0.3, show.legend = F
-  ) +
-  geom_point(aes(fill = time_point), pch = 21, stroke = 0.5, size = 2.5) +
-  geom_line(stat = "smooth", method = "lm", color = "#063970", se = F, linewidth = 1.25, alpha = 0.75) +
-  ggpubr::stat_cor() +
-  scale_fill_manual(values = colors$time_point, breaks = names(colors$time_point)) +
-  # scale_color_manual(values = colors$time_point) +
-  theme_classic() +
-  labs(y = "Alveolar Signature", fill = "Timepoint", x = "LUAD Signature") +
-  guides(fill = guide_legend(override.aes = list(size = 3.5)))
-p
-ggsave(p, file = here("plots", "luad_vs_alveolar_tumorcells.pdf"), width = 4, height = 4)
-```
-
-
-
-```{r, fig.width = 9, fig.height = 3}
-pcomb2 <- wrap_plots(pls, ncol = 1, guides = "collect") + plot_layout(axes = "collect") & theme(panel.border = element_rect(fill = NA, color = "black"), axis.line = element_blank()) # legend.position = "bottom", legend.direction = "vertical", legend.title.position = "left"
-ggsave(pcomb2, file = here("plots", "luad_mapk_select_cors_vertical.pdf"), width = 3.9, height = 7)
-# pcomb
-```
-
-### Within sample correlations
+#### Within sample correlations
 
 ```{r}
 library(easystats)
 x <- srt_epi@meta.data %>%
   filter(is_tumor_cell) %>%
-  mutate(sample_id_new = factor(sample_id_new)) %>%
-  add_count(sample_id_new, name = "n_cells") %>%
-  dplyr::group_by(sample_id_new) %>%
+  mutate(sample_id = factor(sample_id)) %>%
+  add_count(sample_id, name = "n_cells") %>%
+  dplyr::group_by(sample_id) %>%
   correlation::correlation(select = c("LUAD", "LUSC", "SCLC"), select2 = c("BIOCARTA_MAPK_PATHWAY", "KEGG_MAPK_SIGNALING_PATHWAY", "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES"), method = "spearman") %>%
-  left_join(distinct(srt_epi@meta.data[, c("sample_id_new", "time_point")]), by = c("Group" = "sample_id_new")) %>%
+  left_join(distinct(srt_epi@meta.data[, c("sample_id", "time_point")]), by = c("Group" = "sample_id")) %>%
   mutate(
     mapk_path = case_when(
       Parameter2 == "BIOCARTA_MAPK_PATHWAY" ~ "MAPK (Biocarta)",
@@ -1854,119 +1778,29 @@ p
 ```
 
 
-### MAPKalt LUAD
-
-First just use IMPACT definitions
-
-```{r, fig.width = 15, fig.height = 9}
-library(gt)
-supp <- read.table(here("metadata", "supplemental_mapk_mutation_table_edit.txt"), header = T, sep = "\t")
-supp$useInferCNV <- grepl("inferCNV", supp$notes_other)
-
-useinfer <- supp$sample_id[supp$useInferCNV]
-
-samp_ord <- srt_tum@meta.data %>%
-  filter(time_point == "PD", sample_id_new %in% srt_tum@meta.data$sample_id_new) %>%
-  mutate(ord = fct_reorder(sample_id_new, LUAD, mean)) %>%
-  pull(ord) %>%
-  levels()
-
-p0 <- db$metadata %>%
-  filter(time_point == "PD", sample_id_new %in% srt_tum@meta.data$sample_id_new) %>%
-  select(sample_id, sample_id_new, has_impact, EGFR_Primary, EGFR_Secondary, MAPKalt) %>%
-  mutate(sample_id_new = fct_relevel(sample_id_new, samp_ord)) %>%
-  mutate(useInfer = sample_id %in% useinfer) %>%
-  arrange(desc(sample_id_new)) %>%
-  gt::gt(rowname_col = "sample_id_new")
-
-p1 <- srt_tum@meta.data %>%
-  filter(time_point == "PD") %>%
-  ggplot(aes(y = fct_relevel(sample_id_new, samp_ord), x = LUAD)) +
-  geom_violin(scale = "width", aes(fill = time_point), show.legend = F) +
-  geom_pointrange(
-    stat = "summary", fatten = 0.1,
-    fun.min = function(z) {
-      quantile(z, 0.25)
-    },
-    fun.max = function(z) {
-      quantile(z, 0.75)
-    },
-    fun = median, position = position_dodge(width = 0.8), orientation = "y"
-  ) +
-  labs(y = "Sample", x = "LUAD signature score") +
-  scale_fill_manual(values = colors$time_point) +
-  theme(
-    axis.line = element_blank(),
-    panel.border = element_rect(fill = NA, color = "black"),
-    strip.background.x = element_blank()
-  )
-
-pcomb <- wrap_table(p0, space = "fixed") + p1
-pcomb
-```
-
-
-Get inferCNV measures
+### MAPK Genomic Alterations
 
 ```{r}
-tumor_sce <- db$infercnv
-tumor_sce <- tumor_sce[, colnames(srt_tum)]
-tumor_sce <- scatools::overlap_genes(tumor_sce, ensDb = EnsDb.Hsapiens.v86::EnsDb.Hsapiens.v86, gene_biotype = "protein_coding")
-impact_paths <- read.table(here("impact", "impact_mapping.txt"), header = T, sep = "\t")
-
-tier1 <- c("EGFR", "MET", "ERBB2", "PIK3CA", "BRAF", "KRAS")
-tier2 <- c("FGFR1", "FGFR2", "FGFR3", "FGFR4", "ALK", "RET", "ROS1", "RAC1", "MAPK1")
-
-
-cna_df <- pbmcapply::pbmclapply(X = impact_paths$Gene[impact_paths$pathway == "rtk_ras"], mc.cores = 16, FUN = function(g) {
-  try(df <- scatools::plot_gene_cna(sce = tumor_sce, gene = g, return_data = T)[, c("cell_id", g)])
-})
-names(cna_df) <- impact_paths$Gene[impact_paths$pathway == "rtk_ras"]
-x <- map(cna_df, nrow)
-genes_cnv <- names(cna_df[!(map(x, is.null) %>% unlist())])[-1]
-
-cna_df <- cna_df[!(map(x, is.null) %>% unlist())] %>%
-  purrr::reduce(full_join)
-
-spl <- str_split(cna_df$cell_id, pattern = "_", simplify = T)
-cna_df$sample_id <- spl[, 2]
-
-
-cna_df_means <- cna_df %>%
+df_ord <- srt_tum@meta.data %>%
   group_by(sample_id) %>%
-  summarize(across(genes_cnv, ~ mean(.x, na.rm = T)))
-```
+  summarize(mean_LUAD = mean(LUAD),
+            median_LUAD = median(LUAD)) %>%
+  filter(grepl("PD", sample_id)) %>%
+  arrange(median_LUAD, mean_LUAD)
+
+samp_ord <- df_ord %>%
+  pull(sample_id) %>%
+  as.character() %>%
+  rev()
 
 
-```{r, fig.width=10, fig.height =5}
-amp_thresh <- 1.05
+secondary_mapk_class <- distinct(db$metadata, sample_id, mapk_alt)
 
-cnv_df_long <- cna_df_means %>%
-  pivot_longer(cols = !sample_id, values_to = "inferCNV", names_to = "Gene")
-cnv_df_long$inferCNV_amp <- cnv_df_long$inferCNV > amp_thresh
-cnv_df_long$inferCNV_amp_conf <- ifelse(cnv_df_long$inferCNV > 1.1, "high", "low")
-
-cnv_df_long <- filter(cnv_df_long, inferCNV_amp) %>%
-  unite(infercnv, Gene, inferCNV_amp_conf, sep = ": ", remove = F)
-
-cnv_df_add <- cnv_df_long %>%
-  filter(Gene %in% c("EGFR", "MET", "ERBB2", "FGFR1", "FGFR2", "FGFR3", "FGFR4", "PIK3CA", "BRAF", "KRAS")) %>%
-  pivot_wider(id_cols = "sample_id", names_from = "inferCNV_amp_conf", values_from = "Gene", values_fn = function(x) paste0(x, collapse = ";"), values_fill = "", names_prefix = "infercnv_")
-```
-
-
-
-```{r}
-samp_ord <- srt_tum@meta.data %>%
-  filter(time_point == "PD") %>%
-  mutate(sample_id_new = fct_reorder(sample_id_new, -LUAD, median)) %>%
-  pull(sample_id_new) %>%
-  levels()
-
+srt_tum <- update_metadata(srt_tum, secondary_mapk_class, match_by = "sample_id")
 
 p1 <- srt_tum@meta.data %>%
   filter(time_point == "PD") %>%
-  ggplot(aes(x = fct_relevel(sample_id_new, samp_ord), y = LUAD)) +
+  ggplot(aes(x = fct_relevel(sample_id, samp_ord), y = LUAD)) +
   # ggplot(aes(x = sample_id_new, y = LUAD)) +
 
   geom_violin(scale = "width", aes(fill = time_point), show.legend = F) +
@@ -1980,7 +1814,7 @@ p1 <- srt_tum@meta.data %>%
     },
     fun = median, position = position_dodge(width = 0.8)
   ) +
-  facet_grid(. ~ secondary_mapk, scales = "free", space = "free") +
+  facet_grid(. ~ mapk_alt, scales = "free", space = "free") +
   guides(x = guide_axis(angle = 90)) +
   labs(x = "Sample", y = "LUAD score") +
   scale_fill_manual(values = colors$time_point) +
@@ -1993,9 +1827,9 @@ p1 <- srt_tum@meta.data %>%
 
 p2 <- srt_tum@meta.data %>%
   filter(time_point == "PD") %>%
-  group_by(sample_id, secondary_mapk, time_point) %>%
+  group_by(sample_id, mapk_alt, time_point) %>%
   summarize(LUAD = mean(LUAD)) %>%
-  ggplot(aes(x = secondary_mapk, y = LUAD)) +
+  ggplot(aes(x = mapk_alt, y = LUAD)) +
   geom_boxplot(outliers = F, aes(fill = time_point), show.legend = F) +
   geom_quasirandom(size = 0.3, pch = 1) +
   ggpubr::geom_pwc(tip.length = 0, label = "p.signif") +
@@ -2006,7 +1840,7 @@ p2 <- srt_tum@meta.data %>%
   theme_classic()
 
 pcomb <- p1 + p2 + plot_layout(nrow = 1, widths = c(1, 0.1), guides = "collect") & theme(axis.text.x = element_text(size = 6))
-ggsave(pcomb, file = here("plots", "mapk_alt_luad_sig_relapsed_v2.pdf"), width = 5, height = 2.5)
+ggsave(pcomb, file = here("plots", "mapk_alt_luad_sig_relapsed.pdf"), width = 5, height = 2.5)
 pcomb
 ```
 
@@ -2014,9 +1848,10 @@ pcomb
 Create a plot with the mutations annotated in a bar on the side, and notable genes expression in a box heat encoding
 
 ```{r, fig.width = 6, fig.height = 4.25}
-mapk_alt_df <- enframe(secondary_mapk, name = "sample_id_new", value = "variant_list") %>%
-  separate_rows(variant_list, sep = ", ") %>%
-  separate(variant_list, sep = "_", into = c("Gene", "Variant_Type"), remove = F) %>%
+mapk_alt_df <- db$metadata[,c("sample_id", "secondary_mapk", "mapk_alt")] %>%
+  filter(sample_id %in% unique(srt_tum$sample_id)) %>%
+  separate_rows(secondary_mapk, sep = ", ") %>%
+  separate(secondary_mapk, sep = "_", into = c("Gene", "Variant_Type"), remove = F) %>%
   mutate(
     infercnv = grepl("inf", Variant_Type),
     Variant_Type = gsub("inf", "", Variant_Type),
@@ -2025,16 +1860,13 @@ mapk_alt_df <- enframe(secondary_mapk, name = "sample_id_new", value = "variant_
       .default = Gene
     )
   ) %>%
-  mutate(secondary_mapk = case_when(
-    sample_id_new %in% no_mapk ~ "Unknown",
-    .default = "MAPKalt"
-  )) %>%
-  tidyr::complete(nesting(sample_id_new, secondary_mapk), Gene, fill = list(Variant_Type = "NoAlt")) %>%
+  tidyr::complete(nesting(sample_id, mapk_alt), Gene, fill = list(Variant_Type = "NoAlt")) %>%
   mutate(Variant_Type = fct_recode(Variant_Type,
     "Amp" = "amp",
     "Fusion" = "fus"
   )) %>%
-  filter(!grepl("MRD", sample_id_new))
+  filter(!grepl("MRD|TN", sample_id),
+         !is.na(Gene))
 
 
 
@@ -2047,7 +1879,7 @@ gene_ord <- mapk_alt_df[!is.na(mapk_alt_df$Gene) & mapk_alt_df$Variant_Type != "
 
 p3 <- mapk_alt_df %>%
   filter(!is.na(Gene)) %>%
-  ggplot(aes(y = fct_relevel(Gene, rev(names(gene_ord))), x = fct_relevel(sample_id_new, samp_ord))) +
+  ggplot(aes(y = fct_relevel(Gene, rev(names(gene_ord))), x = fct_relevel(sample_id, samp_ord))) +
   geom_tile(aes(fill = fct_relevel(Variant_Type, var_order))) +
   geom_point(
     data = mapk_alt_df[mapk_alt_df$infercnv & !is.na(mapk_alt_df$infercnv), ],
@@ -2073,7 +1905,7 @@ p3 <- mapk_alt_df %>%
   scale_x_discrete(expand = c(0, 0)) +
   scale_color_manual(values = "black") +
   # scale_x_discrete(drop = FALSE) +
-  facet_grid(. ~ secondary_mapk, scales = "free", space = "free") +
+  facet_grid(. ~ mapk_alt, scales = "free", space = "free") +
   labs(x = "Sample", y = "Gene", fill = "Variant", color = NULL)
 p1 <- p1 + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title.x = element_blank())
 
@@ -2091,8 +1923,9 @@ Psuedobulk exp heatmap
 
 ```{r, fig.width = 6, fig.height = 3}
 feats <- c("EGFR", "MET", "ALK", "BRAF", "ERBB2", "FGFR1", "KIT", "KRAS")
-mapk_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id_new", meta_cols = c("time_point", "secondary_mapk"), features = feats)
+mapk_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id", meta_cols = c("time_point", "mapk_alt"), features = feats)
 
+devtools::load_all()
 mapk_exp_df <- mapk_exp_df %>%
   filter(time_point == "PD") %>%
   mutate(across(all_of(feats), ~ standardize(.x)))
@@ -2103,34 +1936,21 @@ mapk_exp_df_long <- mapk_exp_df %>%
 
 p_df <- mapk_exp_df_long %>%
   group_by(Gene) %>%
-  rstatix::wilcox_test(exp ~ secondary_mapk, detailed = T) %>%
+  rstatix::wilcox_test(exp ~ mapk_alt, detailed = T) %>%
   rstatix::adjust_pvalue(method = "BH") %>%
   rstatix::add_significance(
     p.col = "p", cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1),
     symbols = c("***", "**", "*", "^", "")
   )
 
-p4_b <- p_df %>%
-  ggplot(aes(x = "W", y = fct_relevel(Gene, rev(names(gene_ord))))) +
-  geom_tile(aes(fill = estimate)) +
-  geom_text(aes(label = p.signif), vjust = 0.8) +
-  theme_few() +
-  scale_y_discrete(expand = c(0, 0)) +
-  scale_x_discrete(expand = c(0, 0)) +
-  guides(fill = guide_colorbar(keywidth = 0.4, keyheight = 3)) +
-  theme(panel.border = element_blank(), axis.text = element_blank(), axis.ticks = element_blank()) +
-  labs(fill = "W statistic", y = NULL, x = NULL) +
-  scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red"))
-
 p4 <- mapk_exp_df_long %>%
-  ggplot(aes(x = fct_relevel(sample_id_new, samp_ord), y = as.numeric(fct_relevel(Gene, rev(names(gene_ord)))))) +
+  ggplot(aes(x = fct_relevel(sample_id, samp_ord), y = as.numeric(fct_relevel(Gene, rev(names(gene_ord)))))) +
   geom_tile(aes(fill = exp), color = "grey10") +
   scale_fill_viridis_c(option = "rocket") +
   guides(
     x = guide_axis(angle = 90),
     fill = guide_colorbar(keywidth = 0.4, keyheight = 3)
   ) +
-  # scale_y_discrete(expand = c(0,0)) +
   scale_y_continuous(
     expand = c(0, 0), breaks = 1:n_distinct(mapk_exp_df_long$Gene),
     labels = rev(unique(mapk_exp_df_long$Gene)),
@@ -2145,38 +1965,38 @@ p4 <- mapk_exp_df_long %>%
     strip.text.x = element_blank(), strip.background.x = element_blank(), panel.border = element_blank(),
     axis.ticks.y.right = element_blank(), axis.text.y.right = element_text(vjust = 0.8, hjust = 0)
   ) +
-  facet_grid(. ~ secondary_mapk, scales = "free", space = "free") +
+  facet_grid(. ~ mapk_alt, scales = "free", space = "free") +
   labs(x = "Sample", y = "Gene", fill = "Normalized\nExpression")
 p4
 ```
 
-
+#### Merged plot
 
 ```{r, fig.width = 6, fig.height = 5.5}
 pcomb <- (p1 + theme(plot.margin = margin())) + free(p2, type = "space", side = "b") + free((p3 + theme(plot.margin = margin(), axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title.x = element_blank())), type = "space") + plot_spacer() + free(p4, type = "space") + plot_spacer() + plot_layout(ncol = 2, widths = c(1, 0.1), heights = c(1, 1, 0.6)) +
   plot_annotation(theme = theme(plot.margin = margin(3, 8, 15, 12, unit = "mm")))
-ggsave(pcomb, file = here("plots", "mapk_alt_luad_sig_relapsed_plusmuts_plusexp_v2.pdf"), width = 6, height = 5.5)
+ggsave(pcomb, file = here("plots", "mapk_alt_luad_sig_relapsed_plusmuts_plusexp.pdf"), width = 6, height = 5.5)
 
 pcomb
 ```
 
+#### Model lineage associations
+
 Do a model with MAPKalt vs not for the three histologies, then a model for each mutation's association with LUSC and SCLC
 
 ```{r}
-library(tidyr)
-library(broom.mixed)
-
 dat <- srt_tum@meta.data %>%
   filter(time_point == "PD") %>%
-  group_by(sample_id, secondary_mapk, time_point) %>%
-  summarize(across(c(LUAD, LUSC, SCLC), mean))
-dat$secondary_mapk <- factor(dat$secondary_mapk, levels = c("Unknown", "MAPKalt"))
+  group_by(sample_id, mapk_alt, time_point) %>%
+  summarize(across(c(LUAD, LUSC, SCLC), mean)) %>%
+  ungroup() %>%
+  mutate(mapk_alt = fct_relevel(mapk_alt, "Unknown"))
 
 mods <- map(c("LUAD", "LUSC", "SCLC"), .f = function(pth) {
-  mod <- lm(glue::glue("{pth} ~ secondary_mapk"), dat) %>%
+  mod <- lm(glue::glue("{pth} ~ mapk_alt"), dat) %>%
     broom::tidy(conf.int = TRUE) %>%
     mutate(Signature = pth, .before = 1) %>%
-    filter(term == "secondary_mapkMAPKalt")
+    filter(term == "mapk_altMAPKalt")
 }) %>%
   list_rbind()
 
@@ -2206,31 +2026,37 @@ p <- mods %>%
   geom_text(data = {
     filter(mods, p.value != "ns")
   }, aes(y = Signature, x = estimate, label = p.value.signif), nudge_y = 0.325, size = 2.25)
-ggsave(p, file = here("plots", "acquired_mapk_lm_v2.pdf"), width = 2, height = 1.5)
+ggsave(p, file = here("plots", "acquired_mapk_lm.pdf"), width = 2, height = 1.5)
 p
 ```
 
-
-### Signature Heatmap
+### Lineage Signature Heatmap
 
 ```{r}
 feats <- c("LUAD", "LUSC", "SCLC")
-sig_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id_new", meta_cols = c("time_point", "secondary_mapk", "histology_predominant_short"), features = feats)
+sig_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id", meta_cols = c("time_point", "mapk_alt", "histology_predominant_short"), features = feats)
 
 sig_exp_df <- sig_exp_df %>%
-  # filter(time_point == "PD") %>%
   mutate(across(all_of(feats), ~ scale(.x)))
 
 
-samp_ord2 <- fct_reorder(sig_exp_df$sample_id_new, -sig_exp_df$LUAD, median) %>%
-  levels()
+df_ord <- srt_tum@meta.data %>%
+  group_by(sample_id) %>%
+  summarize(mean_LUAD = mean(LUAD),
+            median_LUAD = median(LUAD)) %>%
+  arrange(median_LUAD, mean_LUAD)
+
+samp_ord2 <- df_ord %>%
+  pull(sample_id) %>%
+  as.character() %>%
+  rev()
 
 sig_exp_df_long <- sig_exp_df %>%
   pivot_longer(cols = feats, names_to = "Gene", values_to = "exp")
 
 p0 <- sig_exp_df %>%
-  ggplot(aes(x = fct_relevel(sample_id_new, samp_ord2))) +
-  geom_tile(aes(y = "MAPKalt", fill = secondary_mapk), show.legend = F, color = "black") +
+  ggplot(aes(x = fct_relevel(sample_id, samp_ord2))) +
+  geom_tile(aes(y = "MAPKalt", fill = mapk_alt), show.legend = F, color = "black") +
   scale_fill_manual(
     values = c("MAPKalt" = "black", "Unknown" = "white"), breaks = c("MAPKalt"),
     labels = c("Secondary MAPK"), na.value = "white"
@@ -2243,7 +2069,7 @@ p0 <- sig_exp_df %>%
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
 
 p1 <- sig_exp_df_long %>%
-  ggplot(aes(x = fct_relevel(sample_id_new, samp_ord2), y = fct_relevel(Gene, "SCLC", "LUSC", "LUAD"))) +
+  ggplot(aes(x = fct_relevel(sample_id, samp_ord2), y = fct_relevel(Gene, "SCLC", "LUSC", "LUAD"))) +
   geom_tile(aes(fill = exp), color = "black") +
   # scale_fill_viridis_c(option = "rocket", oob = scales::squish, limits = c(-2, 2)) +
   scale_fill_gradient2(low = scales::muted("blue"), mid = "white", high = scales::muted("red"), oob = scales::squish, limits = c(-2, 2)) +
@@ -2260,23 +2086,11 @@ p1 <- sig_exp_df_long %>%
 ```
 
 
-```{r, fig.width = 9, fig.height = 2}
-pcomb <- p0 + free(p1, type = "label", side = "l") + plot_layout(ncol = 1, heights = c(0.1, 1)) & theme(plot.margin = margin())
-pcomb
-# ggsave(pcomb, file = here("plots", "sig_heatmap.pdf"), width = 9, height = 2)
-```
-
-
-#### Vertical
-
 ```{r, fig.width = 4.5, fig.height = 10}
-library(ggpattern)
-
-sig_exp_df$secondary_mapk[sig_exp_df$sample_id_new %in% db$metadata$sample_id_new[!db$metadata$has_impact]] <- NA
 p0 <- sig_exp_df %>%
-  mutate(secondary_mapk = ifelse(time_point %in% c("TN", "MRD"), "NA", secondary_mapk)) %>%
-  ggplot(aes(x = fct_relevel(sample_id_new, rev(samp_ord2)))) +
-  geom_tile(aes(y = "MAPKalt", fill = secondary_mapk), show.legend = T, color = "black") +
+  mutate(mapk_alt = ifelse(time_point %in% c("TN", "MRD"), "NA", mapk_alt)) %>%
+  ggplot(aes(x = fct_relevel(sample_id, rev(samp_ord2)))) +
+  geom_tile(aes(y = "MAPKalt", fill = mapk_alt), show.legend = T, color = "black") +
   # geom_point(data = sig_exp_df[sig_exp_df$time_point != "PD", ], aes(y = "MAPKalt"), pch = 4, size = 5) +
   # geom_tile_pattern(aes(y = "MAPKalt", fill = "white", pattern = "stripe", color = "black"), show.legend = F) +
   scale_fill_manual(
@@ -2305,7 +2119,7 @@ p0 <- sig_exp_df %>%
   coord_flip()
 
 p1 <- sig_exp_df_long %>%
-  ggplot(aes(x = fct_relevel(sample_id_new, rev(samp_ord2)), y = fct_relevel(Gene, "LUAD", "LUSC", "SCLC"))) +
+  ggplot(aes(x = fct_relevel(sample_id, rev(samp_ord2)), y = fct_relevel(Gene, "LUAD", "LUSC", "SCLC"))) +
   geom_tile(aes(fill = exp), color = "black") +
   # scale_fill_viridis_c(option = "rocket", oob = scales::squish, limits = c(-2, 2)) +
   scale_fill_gradient2(low = scales::muted("blue"), mid = "white", high = scales::muted("red"), oob = scales::squish, limits = c(-2, 2)) +
@@ -2323,53 +2137,50 @@ p1 <- sig_exp_df_long %>%
 
 
 pcomb <- free((p1 + theme(plot.margin = margin(4, 0, 0, 30, "mm"))), type = "label", side = "b") + (p0 + theme(plot.margin = margin(4, 30, 0, 0, "mm"))) + plot_layout(ncol = 2, widths = c(1, 0.66), guides = "collect") + plot_annotation(theme = theme(legend.position = "bottom", legend.box.margin = margin(), legend.margin = margin()))
+ggsave(pcomb, file = here("plots", "sig_heatmap.pdf"), width = 4.5, height = 10)
 
 pcomb
-ggsave(pcomb, file = here("plots", "sig_heatmap_vertical.pdf"), width = 4.5, height = 10)
 ```
 
 
 ### Ternary diagram
 
 ```{r, fig.width = 5.4, fig.height = 3.4}
-if (FALSE) {
-  sig_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id_new", meta_cols = c("time_point", "secondary_mapk"), features = c("LUAD", "LUSC", "SCLC"))
+sig_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id", meta_cols = c("time_point", "mapk_alt"), features = c("LUAD", "LUSC", "SCLC"))
 
-  devtools::load_all()
-  sig_exp_df <- sig_exp_df %>%
-    mutate(across(all_of(c("LUAD", "LUSC", "SCLC")), ~ standardize(.x)))
+devtools::load_all()
+sig_exp_df <- sig_exp_df %>%
+  mutate(across(all_of(c("LUAD", "LUSC", "SCLC")), ~ standardize(.x)))
 
-  sig_exp_df$secondary_mapk[is.na(sig_exp_df$secondary_mapk)] <- "Unknown"
+sig_exp_df$mapk_alt[is.na(sig_exp_df$mapk_alt)] <- "Unknown"
 
-  library(ggtern)
+library(ggtern)
 
-  p1 <- sig_exp_df %>%
-    mutate(acquired_mapk = ifelse(secondary_mapk == "MAPKalt", "MAPKalt", "Unknown")) %>%
-    ggtern(aes(y = LUAD, x = LUSC, z = SCLC)) +
-    geom_mask() +
-    geom_point(aes(fill = time_point, shape = acquired_mapk), size = 3, show.legend = T) +
-    scale_fill_manual(values = colors$time_point) +
-    scale_shape_manual(values = c(21, 24)) +
-    theme_classic() +
-    Tlab("LUAD") + Llab("LUSC") + Rlab("SCLC") +
-    theme_nolabels() +
-    # theme_nomask() +
-    guides(
-      fill = guide_legend(override.aes = list(shape = 21)),
-      shape = guide_legend(override.aes = list(fill = "black"))
-    ) +
-    labs(fill = "Timepoint", shape = "Acquired MAPK") +
-    theme_noticks() +
-    theme(panel.background = element_blank(), panel.border = element_blank()) +
-    # facet_grid(.~time_point, switch = "x") +
-    theme(
-      # axis.title = element_markdown(color = "blue"), # This is where to do it
-      strip.background = element_part_rect(side = ""),
-      legend.position = "right",
-      strip.text.x.bottom = element_text(size = 12, face = "bold")
-    )
-  ggsave(p1, file = here("plots", "sample_ternary_mapk.pdf"), width = 5.4, height = 3.4)
-  p1
-  detach("package:ggtern", unload = TRUE)
-}
+p1 <- sig_exp_df %>%
+  mutate(acquired_mapk = ifelse(mapk_alt == "MAPKalt", "MAPKalt", "Unknown")) %>%
+  ggtern(aes(y = LUAD, x = LUSC, z = SCLC)) +
+  geom_mask() +
+  geom_point(aes(fill = time_point, shape = acquired_mapk), size = 3, show.legend = T) +
+  scale_fill_manual(values = colors$time_point) +
+  scale_shape_manual(values = c(21, 24)) +
+  theme_classic() +
+  Tlab("LUAD") + Llab("LUSC") + Rlab("SCLC") +
+  theme_nolabels() +
+  # theme_nomask() +
+  guides(
+    fill = guide_legend(override.aes = list(shape = 21)),
+    shape = guide_legend(override.aes = list(fill = "black"))
+  ) +
+  labs(fill = "Timepoint", shape = "Acquired MAPK") +
+  theme_noticks() +
+  theme(panel.background = element_blank(), panel.border = element_blank()) +
+  # facet_grid(.~time_point, switch = "x") +
+  theme(
+    # axis.title = element_markdown(color = "blue"), # This is where to do it
+    strip.background = element_part_rect(side = ""),
+    legend.position = "right",
+    strip.text.x.bottom = element_text(size = 12, face = "bold")
+  )
+ggsave(p1, file = here("plots", "sample_ternary_mapk.pdf"), width = 5.4, height = 3.4)
+p1
 ```
