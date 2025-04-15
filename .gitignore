@@ -129,3 +129,5 @@ dmypy.json
 .pyre/
 .Rproj.user
 docs
+
+/.quarto/

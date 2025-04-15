@@ -7,6 +7,7 @@ format: html
 library(schard)
 library(tidyverse)
 library(glue)
+library(Seurat)
 library(BPCells)
 library(here)
 ```

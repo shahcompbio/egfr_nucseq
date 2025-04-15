@@ -3,3 +3,22 @@ template:
   bootstrap: 5
   bootswatch: minty
   light-switch: true
+
+navbar:
+  structure:
+    left:  [intro, vignettes]
+    right: [github, lightswitch]
+  components:
+    vignettes:
+      text: Vignettes
+      menu:
+        - text: Histotime Analysis
+          href: vignettes/23_histotime.html
+        - text: IMPACT Analysis
+          href: vignettes/30_impact.html
+        - text: LuCA Atlas Analysis
+          href: vignettes/41_luca_analysis.html
+        - text: TCGA/CPTAC Aanalysis
+          href: vignettes/42_tcga_cptac_analysis.html
+        - text: Main Plotting Code
+          href: vignettes/99_plots.html

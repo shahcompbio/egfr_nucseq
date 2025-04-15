@@ -1,11 +1,20 @@
 ---
 title: "LuCA Atlas Analysis"
 author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+execute: 
+  warning: false
+  error: false
+format: 
+  html:
+    embed-resources: true
+    code-tools: true
+    toc: true
 ---
 
-# Introduction
 
 ```{r setup}
+#| output: false
 library(tidyverse)
 library(here)
 library(ggthemes)
@@ -17,35 +26,28 @@ devtools::load_all()
 markers <- load_markers()
 ```
 
+# Load Data
 
 ```{r}
-luca <- readRDS(here("data", "luca_extended.rds"))
+luca <- readRDS(here("paper_data", "luca_extended.rds"))
 
 luca <- luca[, luca$ann_coarse == "Epithelial cell"]
 
-scores <- read.table(file = here("data", "luca_ucell_signatures.txt.gz"), header = T, sep = "\t")
+scores <- read.table(file = here("paper_data", "luca_ucell_signatures.txt.gz"), header = T, sep = "\t")
 rownames(scores) <- scores$cell_id
 scores$cell_id <- NULL
 luca <- AddMetaData(luca, scores)
 ```
 
+# Check Markers
 
 ```{r, fig.width = 9, fig.height = 4}
-p <- DotPlotter(luca, features = markers$epi_markers, group.by = "ann_fine")
+#| warning: false
+p <- DotPlotter(luca, features = markers$epi_markers_final, group.by = "ann_fine", rotate_y_strip = T)
 p
 ```
 
-
-Geta sense of sample cell type counts
-
-```{r, fig.width=10, fig.height = 6}
-luca@meta.data %>%
-  ggplot(aes(x = study)) +
-  geom_bar(aes(fill = ann_fine)) +
-  guides(x = guide_axis(angle = 45)) +
-  scale_fill_ptol()
-```
-
+# Compute mean scores and plot
 
 ```{r}
 sample_df <- luca@meta.data %>%
@@ -54,10 +56,7 @@ sample_df <- luca@meta.data %>%
   mutate(prop_fine = n_epi / n_fine) %>%
   select(study, dataset, donor_id, sample, origin, platform, n_epi, ends_with("_mutation")) %>%
   distinct()
-```
 
-
-```{r}
 mean_scores <- luca@meta.data %>%
   group_by(sample) %>%
   add_count(name = "n_samp") %>%
@@ -72,7 +71,6 @@ mean_scores <- luca@meta.data %>%
 mean_scores_long <- mean_scores %>%
   pivot_longer(cols = colnames(scores), names_to = "Pathway", values_to = "mean_exp")
 ```
-
 
 ```{r, fig.width = 8, fig.height = 3}
 df <- mean_scores %>%

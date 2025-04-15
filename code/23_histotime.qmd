@@ -3,16 +3,14 @@ title: "Histotime Analysis"
 author: "Matthew Zatzman"
 date: "`r Sys.Date()`"
 execute: 
-  cache: true
-  freeze: auto
+  warning: false
+  error: false
 format: 
   html:
-    code-fold: true
+    embed-resources: true
     code-tools: true
-    code-link: true
     toc: true
 ---
-
 
 ```{r setup}
 #| output: false
@@ -37,8 +35,6 @@ devtools::load_all()
 colors <- load_colors()
 markers <- load_markers()
 
-options(Seurat.object.assay.version = "v5")
-
 theme_set(theme_classic())
 
 symnum.args <- list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, Inf), symbols = c("p<0.0001", "p<0.001", "p<0.01", "p<0.05", "ns"))
@@ -56,9 +52,9 @@ symnum_0.1_star <- list(cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, Inf), sy
 # Load objects
 
 ```{r}
-sce_ti <- readRDS(here("data", "slingshot_sce_v2.rds"))
-srt_ti <- readRDS(here("data", "egfr_histo.rds"))
-sce_gam <- readRDS(here("data", "sce_gam_v2.rds"))
+sce_ti <- readRDS(here("paper_data", "slingshot_sce_v2.rds"))
+srt_ti <- readRDS(here("paper_data", "egfr_histo.rds"))
+sce_gam <- readRDS(here("paper_data", "sce_gam_v2.rds"))
 
 srt_ti$time_point <- fct_relevel(srt_ti$time_point, "TN", "MRD", "PD")
 ```
@@ -332,7 +328,7 @@ meta_programs <- map(meta_programs, .f = function(x) {
 
 names(meta_programs) <- janitor::make_clean_names(names(meta_programs))
 
-pathways_v2 <- read.table(here("data", "egfr_pathways.txt"), header = T, sep = "\t")
+pathways_v2 <- read.table(here("paper_data", "egfr_pathways.txt"), header = T, sep = "\t")
 
 
 all_paths <- c(meta_programs$malignant, split(pathways_v2$Gene, pathways_v2$pathway))
@@ -340,7 +336,7 @@ all_paths <- c(meta_programs$malignant, split(pathways_v2$Gene, pathways_v2$path
 
 
 ```{r}
-if (!file.exists(here("data", "ucell_scores_histotime.txt"))) {
+if (!file.exists(here("paper_data", "ucell_scores_histotime.txt"))) {
   library(UCell)
   library(BiocParallel)
   mat_full <- predictSmooth(models = sce_gam, gene = rownames(sce_gam), nPoints = 100, tidy = FALSE)
@@ -363,9 +359,9 @@ if (!file.exists(here("data", "ucell_scores_histotime.txt"))) {
       "SCLC" = "SCLC_CCLE"
     ))
 
-  write.table(ucell_df, file = here("data", "ucell_scores_histotime.txt"), col.names = T, row.names = F, quote = F, sep = "\t")
+  write.table(ucell_df, file = here("paper_data", "ucell_scores_histotime.txt"), col.names = T, row.names = F, quote = F, sep = "\t")
 } else {
-  ucell_df <- read.table(file = here("data", "ucell_scores_histotime.txt"), header = T, sep = "\t")
+  ucell_df <- read.table(file = here("paper_data", "ucell_scores_histotime.txt"), header = T, sep = "\t")
 }
 ```
 
@@ -373,13 +369,13 @@ if (!file.exists(here("data", "ucell_scores_histotime.txt"))) {
 ## Select pathways
 
 ```{r}
-emt_paths <- grep("emt|HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", ignore.case = T, colnames(histo_scores), value = T)
-myc_paths <- c(grep("myc", ignore.case = T, colnames(histo_scores), value = T))
+emt_paths <- grep("emt|HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", ignore.case = T, unique(ucell_df$features.plot), value = T)
+myc_paths <- c(grep("myc", ignore.case = T, unique(ucell_df$features.plot), value = T))
 stemness <- c("WONG_EMBRYONIC_STEM_CELL_CORE", "BENPORATH_PRC2_TARGETS")
 metabolic_paths <- c("HALLMARK_GLYCOLYSIS", "HALLMARK_OXIDATIVE_PHOSPHORYLATION", "HALLMARK_MTORC1_SIGNALING")
 histological_malignant <- c("LUAD", "LUSC", "SCLC")
 histological <- c("TRAVAGLINI_LUNG_ALVEOLAR_EPITHELIAL_TYPE_1_CELL", "TRAVAGLINI_LUNG_ALVEOLAR_EPITHELIAL_TYPE_2_CELL", "alveolar", "TRAVAGLINI_LUNG_BASAL_CELL", "TRAVAGLINI_LUNG_CILIATED_CELL", "TRAVAGLINI_LUNG_CLUB_CELL", "TRAVAGLINI_LUNG_NEUROENDOCRINE_CELL", "TRAVAGLINI_LUNG_PROLIFERATING_BASAL_CELL", "TRAVAGLINI_LUNG_PROXIMAL_BASAL_CELL")
-cell_cycle <- c(grep("cycle", colnames(histo_scores), ignore.case = T, value = T))
+cell_cycle <- c(grep("cycle", unique(ucell_df$features.plot), ignore.case = T, value = T))
 mapk <- c("REACTOME_MAPK_FAMILY_SIGNALING_CASCADES", "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES", "BIOCARTA_MAPK_PATHWAY", "KEGG_MAPK_SIGNALING_PATHWAY", "REACTOME_SIGNALING_BY_EGFR")
 
 
@@ -615,8 +611,8 @@ p_lineage_prop <- srt_ti@meta.data %>%
     axis.title.y = element_text(hjust = 0.3)
   ) +
   labs(x = NULL, y = "Proportion\nCommitted\n(>20%)")
-p_lineage_prop
 # ggsave(p_lineage_prop, file = here("plots", "lineage_prop_jitter_v2.pdf"), width = 6, height = 2.5)
+p_lineage_prop
 ```
 
 
@@ -640,13 +636,13 @@ srt_ti$scrna_histo <- scrna_histo$scrna_histology[match(srt_ti$sample_id, scrna_
 If we rescale within the core luad branch we approximate a luad dedifferentiation score.
 
 ```{r}
-quantile(srt_ti@meta.data[srt_ti$lineage_assignment == "LUAD", ]$pseudotime_scaled, prob = 0.95)
+# quantile(srt_ti@meta.data[srt_ti$lineage_assignment == "LUAD", ]$pseudotime_scaled, prob = c(0.05, 0.99))
 
 srt_ti@meta.data %>%
   filter(lineage_assignment == "LUAD") %>%
   ggplot(aes(x = pseudotime_scaled)) +
   geom_histogram(bins = 50) +
-  geom_vline(xintercept = quantile(srt_ti@meta.data[srt_ti$lineage_assignment == "LUAD", ]$pseudotime_scaled, prob = c(0.05, 0.999)))
+  geom_vline(xintercept = quantile(srt_ti@meta.data[srt_ti$lineage_assignment == "LUAD", ]$pseudotime_scaled, prob = c(0.05, 0.99)))
 ```
 
 Overlap with the other branches?
@@ -671,7 +667,7 @@ srt_ti$luad_dediff <- standardize(srt_ti$luad_dediff)
 ```
 
 
-```{r}
+```{r, fig.width = 9, fig.height = 2.75}
 p_linprob_dediff <- srt_ti@meta.data %>%
   arrange(desc(abs(luad_dediff))) %>%
   # filter(lineage_assignment == "LUAD") %>%
@@ -919,9 +915,8 @@ pcomb <-
   free((p_linprob_vln + labs(x = NULL) + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), plot.margin = margin(t = tb_pad, b = 0, unit = "lines"))), type = "label", side = "l") +
   free((p_linprob_dediff + labs(x = NULL) + theme(strip.text = element_blank(), strip.background = element_blank(), axis.lines = element_blank(), strip.clip = "off", panel.border = element_rect(fill = NA), axis.text.x = element_blank(), axis.ticks.x = element_blank(), plot.margin = margin(t = tb_pad, b = 0, unit = "lines"))), type = "label", side = "l") +
   free((p_prop + theme(plot.margin = margin())), type = "label", side = "l") + (p_anno + labs(x = "Sample ID") + theme(plot.margin = margin(t = 0, b = tb_pad, unit = "lines")) + guides(x = guide_axis(angle = 90))) + plot_layout(ncol = 1, heights = c(1, 1, 1.3, 0.6))
-pcomb
-
 ggsave(pcomb, file = here("plots", "lineage_prob_dotviolin_anno.pdf"), width = 11, height = 8)
+pcomb
 ```
 
 
@@ -948,14 +943,14 @@ p <- srt_ti@meta.data %>%
   ggpubr::geom_pwc(label = "p.signif", tip.length = 0, vjust = 0.5) +
   coord_cartesian(clip = "off") +
   labs(x = "Treatment Naive", y = "LUAD dedifferentiation")
-p
 ggsave(p, file = here("plots", "TP53mut_TN_luad_dediff.pdf"), width = 1.75, height = 2)
+p
 ```
 
 
 ```{r, fig.width = 6, fig.height = 3}
-srt_epi <- readRDS(here("data", "egfr_epi.rds"))
-srt_meta <- readRDS(here("data", "egfr_cohort.rds"))@meta.data
+srt_epi <- readRDS(here("paper_data", "egfr_epi.rds"))
+srt_meta <- readRDS(here("paper_data", "egfr_cohort.rds"))@meta.data
 
 prop_df <- srt_meta %>%
   filter(is_tumor_cell == "TRUE") %>%
@@ -1010,7 +1005,7 @@ p <- srt_ti@meta.data %>%
   ggpubr::geom_pwc(label = "p.signif", tip.length = 0, vjust = 0.5) +
   coord_cartesian(clip = "off") +
   labs(x = "Progressive Disease", y = "LUAD dedifferentiation")
-p
 ggsave(p, file = here("plots", "MAPKalt_PD_luad_dediff.pdf"), width = 1.75, height = 2)
+p
 ```
 

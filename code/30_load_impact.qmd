@@ -35,10 +35,9 @@ impact_data <- load_impact(
   impact_dir = "/data1/shahs3/users/zatzmanm/work/repos/shared/msk-impact/",
   facets_data = here("results", "facets_data_dec_2024.txt"),
   dmp_ids = metadata$closest_impact_to_sample,
-  save_to = here("data", "impact_data.rds")
+  save_to = here("paper_data", "impact_data.rds")
 )
 
-# oncokb_dat <- load_oncokb(oncokb_dir = "/data1/shahs3/users/zatzmanm/work/repos/shared/oncokb-annotated-msk-impact", dmp_ids = metadata$closest_impact_to_sample)
 ```
 
 
