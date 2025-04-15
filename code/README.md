@@ -36,14 +36,14 @@ Epithelial cell subset and histotime analysis on tumor cells
 14.  `20_epithelial_object.qmd`: Subset, recluster, and annotate epithelial cell object
 15.  `21_run_slingshot.qmd`: Run Slingshot
 16.  `22_fit_gams.qmd`: Fit GAMs using TradeSeq
-17.  [**`23_histotime.qmd`**](link): Histotime analysis
+17.  [**`23_histotime.qmd`**](https://shahcompbio.github.io/egfr_nucseq/articles/23_histotime.html): Histotime analysis
 
 ## IMPACT Analysis
 
 Code to load and plot IMPACT data
 
 18. `30_load_impact.qmd`: Load IMPACT data
-19. [**`31_impact_analysis.qmd`**](link): IMPACT data analysis
+19. [**`31_impact_analysis.qmd`**](https://shahcompbio.github.io/egfr_nucseq/articles/31_impact_analysis.html): IMPACT data analysis
 
 
 ## External Datasets
@@ -51,11 +51,11 @@ Code to load and plot IMPACT data
 Analysis code for [LuCA](https://pubmed.ncbi.nlm.nih.gov/36368318/) and TCGA LUAD datasets.
 
 20.   `40_luca_ranks.qmd`: UCell ranks for the LuCA Atlas data
-22.   [**`41_luca_analysis.qmd`**](link): LuCA Analysis
-22.   [**`42_tcga_cptac_analysis.qmd`**](link): TCGA and CPTAC bulk RNA dataset analysis
+21.   [**`41_luca_analysis.qmd`**](https://shahcompbio.github.io/egfr_nucseq/articles/41_luca_analysis.html): LuCA Analysis
+22.   [**`42_tcga_cptac_analysis.qmd`**](https://shahcompbio.github.io/egfr_nucseq/articles/42_tcga_cptac_analysis.html): TCGA and CPTAC bulk RNA dataset analysis
 
 ## Main Plotting
 
 Core plotting script for figure production
 
-23. [**`99_plots.qmd`**](link): Main plotting script
+1.  [**`99_plots.qmd`**](https://shahcompbio.github.io/egfr_nucseq/articles/99_plots.html): Main plotting script
