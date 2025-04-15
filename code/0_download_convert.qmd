@@ -13,14 +13,14 @@ library(here)
 
 # Study Objects
 
-Download H5ADs from CELLxGENE for [our study](https://cellxgene.cziscience.com/collections/df8ef04c-7a87-49d4-a127-f8d653d89d91), the [LuCA extended atlas](https://cellxgene.cziscience.com/collections/edb893ee-4066-4128-9aec-5eb2b03f8287) and place then into `/data` folder. We will convert them into rds format using the `schard` package for downstream use.
+Download H5ADs from CELLxGENE for [our study](https://cellxgene.cziscience.com/collections/df8ef04c-7a87-49d4-a127-f8d653d89d91), the [LuCA extended atlas](https://cellxgene.cziscience.com/collections/edb893ee-4066-4128-9aec-5eb2b03f8287) and place then into `/paper_data` folder. We will convert them into rds format using the `schard` package for downstream use.
 
 ```{r}
 # Convert our study objects
 file_list <- list(
-  "cohort" = here("data", "egfr_cohort.h5ad"),
-  "epi" = here("data", "egfr_epi.h5ad"),
-  "histo" = here("data", "egfr_histo.h5ad")
+  "cohort" = here("paper_data", "egfr_cohort.h5ad"),
+  "epi" = here("paper_data", "egfr_epi.h5ad"),
+  "histo" = here("paper_data", "egfr_histo.h5ad")
 )
 
 stopifnot("Files missing" = all(unlist(lapply(file_list, file.exists))))
@@ -32,42 +32,42 @@ var_meta <- schard::h5ad2data.frame(file_list$cohort, name = "var")
 mat <- BPCells::open_matrix_anndata_hdf5(file_list$cohort, group = "raw/X")
 rownames(mat) <- var_meta$gene
 mat <- convert_matrix_type(mat)
-write_matrix_dir(mat, dir = here("data", "egfr_ondisk"), overwrite = T)
+write_matrix_dir(mat, dir = here("paper_data", "egfr_ondisk"), overwrite = T)
 # Reload here. We will use this matrix for all objects
-mat <- open_matrix_dir(here("data", "egfr_ondisk"))
+mat <- open_matrix_dir(here("paper_data", "egfr_ondisk"))
 
 walk(names(file_list), .f = function(name) {
   cli::cli_alert_info("Converting {name}")
   srt <- h5ad2seurat(file_list[[name]], use.raw = F, load.X = F)
-  
+
   names(srt@reductions) <- gsub("_$", "", gsub("^X", "", names(srt@reductions)))
-  
-  srt[["RNAV5"]] <- CreateAssay5Object(counts = mat[,colnames(srt)])
-  
+
+  srt[["RNAV5"]] <- CreateAssay5Object(counts = mat[, colnames(srt)])
+
   srt[["RNA"]] <- srt[["RNAV5"]]
   srt[["RNAV5"]] <- NULL
-  
+
   srt <- NormalizeData(srt)
-  
-  saveRDS(srt, file = here("data", glue("egfr_{name}.rds")))
+
+  saveRDS(srt, file = here("paper_data", glue("egfr_{name}.rds")))
 })
 
 # Convert LuCA atlas data
 cli::cli_alert_info("Converting LuCA Atlas data")
 # We just need metadata
-luca_meta <- schard::h5ad2data.frame(here("data", "luca_extended.h5ad"), name = "obs")
-luca_var_meta <- schard::h5ad2data.frame(here("data", "luca_extended.h5ad"), name = "var")
+luca_meta <- schard::h5ad2data.frame(here("paper_data", "luca_extended.h5ad"), name = "obs")
+luca_var_meta <- schard::h5ad2data.frame(here("paper_data", "luca_extended.h5ad"), name = "var")
 
 # Use BPCells to create on disk count matrix given large object size
-mat <- BPCells::open_matrix_anndata_hdf5(here("data", "luca_extended.h5ad"), group = "raw/X")
+mat <- BPCells::open_matrix_anndata_hdf5(here("paper_data", "luca_extended.h5ad"), group = "raw/X")
 rownames(mat) <- luca_var_meta$feature_name
 mat <- convert_matrix_type(mat)
-write_matrix_dir(mat, dir = here("data", "luca_ondisk"), overwrite = T)
+write_matrix_dir(mat, dir = here("paper_data", "luca_ondisk"), overwrite = T)
 
 # Create the seurat object using the on disk counts
-luca <- CreateSeuratObject(counts = open_matrix_dir(here("data", "luca_ondisk")), meta.data = luca_meta)
+luca <- CreateSeuratObject(counts = open_matrix_dir(here("paper_data", "luca_ondisk")), meta.data = luca_meta)
 luca <- NormalizeData(luca)
-saveRDS(luca, file = here("data", "luca_extended.rds"))
+saveRDS(luca, file = here("paper_data", "luca_extended.rds"))
 ```
 
 

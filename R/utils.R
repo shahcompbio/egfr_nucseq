@@ -200,4 +200,3 @@ update_metadata <- function(obj, metadata, match_by) {
   obj@meta.data <- new_meta
   return(obj)
 }
-

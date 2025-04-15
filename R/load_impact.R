@@ -267,22 +267,6 @@ load_oncokb <- function(oncokb_dir = "/data1/shahs3/users/zatzmanm/work/repos/sh
     filter(dmp_sample %in% dmp_ids) %>%
     janitor::clean_names()
 
-  # Merge into a table
-  # oncokb_muts_simple <- oncokb_muts %>%
-  #   dplyr::select(dmp_pid, dmp_tumor, dmp_sample, Gene = hugo_symbol, mutation_type = variant_classification, t_ref_count, t_alt_count, n_ref_count, n_alt_count, hgv_sp, hgv_sp_short, is_a_hotspot:px_citations) %>%
-  #   dplyr::mutate(t_vaf = t_alt_count / (t_ref_count + t_alt_count)) %>%
-  #   dplyr::relocate(t_vaf, .before = t_ref_count) %>%
-  #   mutate(source = "muts")
-  #
-  # oncokb_cna_simple <- oncokb_cna %>%
-  #   dplyr::select(dmp_pid, dmp_tumor, dmp_sample, Gene = hugo_symbol, mutation_type = alteration, annotated:px_citations) %>%
-  #   mutate(source = "cna")
-
-
-  # oncokb_dat_merged <- purrr::list_rbind(list(oncokb_muts_simple, oncokb_cna_simple))
-  #
-  # Split out clindat into longform for each mut
-
   oncokb_summary_table <- oncokb_clindat %>%
     # resistance mutations are seperate
     mutate(mutations_full = ifelse(resistance_mutations != "", paste(oncogenic_mutations, resistance_mutations, sep = ";"), oncogenic_mutations)) %>%

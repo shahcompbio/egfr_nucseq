@@ -20,7 +20,7 @@ colors <- load_colors()
 ```{r}
 onco_dat <- read_excel(here("data", "supplemental_tables.xlsx"), sheet = "Table S2 - IMPACT Mutations")
 metadata <- read_excel(here("data", "supplemental_tables.xlsx"), sheet = "Table S1 - Cohort Metadata") %>%
-  as.data.frame() 
+  as.data.frame()
 metadata$facets_fga <- as.numeric(metadata$facets_fga)
 metadata$facets_ploidy <- as.numeric(metadata$facets_ploidy)
 metadata$facets_purity <- as.numeric(metadata$facets_purity)

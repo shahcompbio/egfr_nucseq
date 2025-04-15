@@ -55,22 +55,8 @@ srt_epi <- db$srt_epi
 ## Pathways
 
 ```{r}
-# pathways <- read.table(here("metadata", "pathways", "egfr_pathways_annotations.txt"), header = T, sep = "\t")
-# mapk_paths <- filter(pathways, category == "MAPK")$pathway
-# tum_paths <- c("LUAD", "LUSC", "SCLC")
-
-# srt_epi$LUAD <- srt_epi$LUAD_GIRARD
-# srt_epi$LUSC <- srt_epi$LUSC_GIRARD
-# srt_epi$SCLC <- srt_epi$SCLC_CCLE
-# srt_epi$MAPK <- srt_epi$REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES
-
-# pathways$pathway[pathways$pathway == "LUAD_GIRARD"] <- "LUAD"
-# pathways$pathway[pathways$pathway == "LUSC_GIRARD"] <- "LUSC"
-# pathways$pathway[pathways$pathway == "SCLC_CCLE"] <- "SCLC"
-
-pathways <- read.table(here("data", "egfr_pathways.txt"), header = T, sep = "\t") # Additional pathways
+pathways <- read.table(here("paper_data", "egfr_pathways.txt"), header = T, sep = "\t") # Additional pathways
 ```
-
 
 
 # Plotting
@@ -404,7 +390,6 @@ egfr_hits %>%
   labs(x = "Sample ID", y = "EGFR Mutation") +
   theme_pander() +
   theme(panel.border = element_rect(fill = NA, color = "black"), strip.clip = "off")
-
 ```
 
 
@@ -1417,7 +1402,6 @@ p <- df %>%
   geom_violin(scale = "width", aes(fill = cell_type_epi)) +
   guides(x = guide_axis(angle = 45)) +
   geom_boxplot(width = 0.1, fill = "white", outliers = F) +
-
   scale_fill_manual(values = colors$cell_type_epi) +
   theme_classic(base_size = 16) +
   NoLegend() +
@@ -2597,7 +2581,6 @@ ggsave(pcomb, file = here("plots", "sig_heatmap_vertical.pdf"), width = 4.5, hei
 
 ```{r, fig.width = 5.4, fig.height = 3.4}
 if (FALSE) {
-
   sig_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id_new", meta_cols = c("time_point", "secondary_mapk"), features = c("LUAD", "LUSC", "SCLC"))
 
   devtools::load_all()

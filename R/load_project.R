@@ -1,12 +1,12 @@
 #' @export
-load_project <- function(cohort_obj = here::here("data/egfr_cohort.rds"),
-                         epi_obj = here::here("data/egfr_epi.rds"),
-                         histo_obj = here::here("data/egfr_histo.rds"),
-                         infercnv_obj = here::here("data/egfr_cohort_cnv.rds"),
-                         # metadata_sheet = "data/supplemental_tables.xlsx",
+load_project <- function(cohort_obj = here::here("paper_data/egfr_cohort.rds"),
+                         epi_obj = here::here("paper_data/egfr_epi.rds"),
+                         histo_obj = here::here("paper_data/egfr_histo.rds"),
+                         infercnv_obj = here::here("paper_data/egfr_cohort_cnv.rds"),
+                         # metapaper_data_sheet = "paper_data/supplemental_tables.xlsx",
                          # impact_obj = "impact_data.rds",
-                         ct_spec = here::here("data/cell_type_patient_specificity.txt.gz"),
-                         tp_spec = here::here("data/cell_type_timepoint_specificity.txt.gz")) {
+                         ct_spec = here::here("paper_data/cell_type_patient_specificity.txt.gz"),
+                         tp_spec = here::here("paper_data/cell_type_timepoint_specificity.txt.gz")) {
   cli::cli_alert_info("Loading EGFR Project data")
 
   cli::cli_dl(c(

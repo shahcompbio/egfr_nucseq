@@ -1,6 +1,6 @@
 # Code
 
-Many scripts here are meant to demonstrate how the data were processed, and are not intended to be rerunnable as is. Scripts that are possible to rerun are indicated in **`bold`**, and are meant to demonstrate figure reproduction.
+Many scripts here are meant to demonstrate how the data were processed. Note that these are not necessarily runnable as is. Rendered vignettes of select scripts (indicated in **bold**) demonstrating figure reproduction and can be found on the [code website](link).
 
 ## Download and convert objects
 
@@ -42,15 +42,15 @@ Epithelial cell subset and histotime analysis on tumor cells
 
 Code to load and plot IMPACT data
 
-18. **`30_load_impact.qmd`***: Load IMPACT data
+18. **`30_load_impact.qmd`**: Load IMPACT data
 
 ## External Datasets
 
 Analysis code for [LuCA](https://pubmed.ncbi.nlm.nih.gov/36368318/) and TCGA LUAD datasets.
 
-1.   `40_luca_ranks.qmd`: UCell ranks for the LuCA Atlas data
-2.   **`41_luca_analysis.qmd`**: LuCA Analysis
-3.   **`42_tcga_cptac_analysis.qmd`**: TCGA and CPTAC bulk RNA dataset analysis
+19.   `40_luca_ranks.qmd`: UCell ranks for the LuCA Atlas data
+20.   **`41_luca_analysis.qmd`**: LuCA Analysis
+21.   **`42_tcga_cptac_analysis.qmd`**: TCGA and CPTAC bulk RNA dataset analysis
 
 ## Main Plotting
 
