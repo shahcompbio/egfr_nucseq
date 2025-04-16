@@ -739,8 +739,9 @@ anno_df <- srt_ti@meta.data %>%
   mutate(site_of_tissue_simple = factor(site_of_tissue_simple, levels = names(colors$site_of_tissue_simple))) %>%
   mutate(has_impact = as.logical(has_impact))
 anno_df$tp53mut[!anno_df$has_impact] <- "NA"
-anno_df$mapk_alt[anno_df$has_impact == "FALSE" | anno_df$time_point %in% c("TN", "MRD")] <- "NA"
+anno_df$mapk_alt[anno_df$time_point %in% c("TN", "MRD")] <- "NA"
 anno_df$rb1mut[!anno_df$has_impact] <- "NA"
+anno_df$mapk_alt[anno_df$sample_id == "PD20"] <- "Unknown"
 
 p_anno <- anno_df %>%
   ggplot(aes(x = fct_relevel(sample_id, samp_order))) +
