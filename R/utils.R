@@ -79,12 +79,9 @@ DotPlotter <- function(obj,
     scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red")) +
     theme(
       axis.line = element_blank(),
-      # panel.grid = element_line(color = "black"),
-      # panel.grid.major = element_line(color = "grey45", linetype = "dotted"),
       panel.background = element_blank(),
       panel.border = element_rect(fill = NA, color = "black"),
       strip.background.x = element_blank(),
-      # strip.text.x = element_text(angle = 90, hjust = 0),
       strip.clip = "off"
     ) +
     guides(

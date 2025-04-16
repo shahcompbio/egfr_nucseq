@@ -12,16 +12,6 @@ load_colors <- function() {
       "Fibroblast" = "#6a3d9a",
       "Other" = "#b3b3b3"
     ),
-    "epi_type" = c(
-      c(
-        "AT1-like" = "#E64B35FF",
-        "AT2-like" = "#4DBBD5FF",
-        "Cycling" = "#00A087FF",
-        "Mixed" = "#3C5488FF",
-        "Mixed 2" = "#F39B7FFF",
-        "Multiciliated" = "#8491B4FF"
-      )
-    ),
     "time_point" = c(
       "TN" = "#7aa77f",
       "MRD" = "#94b6d2",
@@ -36,15 +26,6 @@ load_colors <- function() {
       "Male" = "#57aed1",
       "Female" = "#F33A6A"
     ),
-    # "histo_cols" = c(
-    #   "LUAD" = "#82271A",
-    #   "LUAD-dominant" = "#E64B35FF",
-    #   "LUSC" = "#005B7B",
-    #   "LUSC-dominant" = "#4DBBD5FF",
-    #   "SCLC" = "#005F3D",
-    #   "SCLC-dominant" = "#00A087FF",
-    #   "Mixed" = "#FFDC91FF"
-    # ),
     "histology_predominant" = c(
       "Lung Adenocarcinoma" = "#88CCEE",
       "Lung Squamous Cell Carcinoma" = "#661100",
@@ -75,17 +56,6 @@ load_colors <- function() {
       "NA" = "grey60",
       "Undetected" = "grey60",
       "Not applicable" = "grey60"
-    ),
-    "mech_resistance" = c(
-      "MAPK-sustained" = "orange",
-      "Plasticity" = "maroon",
-      "Other" = "navy"
-    ),
-    "mor" = c(
-      "On Target" = "orange",
-      "Off Target" = "red",
-      "Histologic Transformation" = "maroon",
-      "Unknown" = "navy"
     ),
     "site_of_tissue_simple" = c(
       "Primary" = "#56B4E9",

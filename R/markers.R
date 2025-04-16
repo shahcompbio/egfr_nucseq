@@ -1,18 +1,6 @@
 #' @export
 load_markers <- function() {
   markers <- list()
-  markers$epi_markers <- list(
-    "AT1" = c("AGER", "CAV1", "PDPN", "CLIC5"), ## AT1, CLIC5 in lung cancer atlas paper
-    "AT2" = c("SFTPB", "SFTPC", "KRT7", "NKX2-1", "HBEGF"), ## AIC highly expressed
-    "AIC" = c("SFTPD", "ETV5", "WIF1", "HHIP"), ## AT2 cells
-    "Ciliated" = c("CAPS", "PIFO", "FOXJ1", "CCDC78", "TP73"), ## ciliated
-    "Tuft" = c("ASCL2", "MGST2", "PTGS1", "GNAT3"), ## tuft
-    "NE" = c("CALCA", "ASCL1", "CHGA", "ENO2", "SYP"), ## neuroendocrine
-    "Ionocyte" = c("ASCL3", "FOXI1", "CEL", "ATP6V1B1"), ## ionocyte
-    "Basal" = c("KRT17", "TP63", "KRT5", "KRT15"), ## basal cells
-    "Club" = c("SCGB3A2", "SCGB1A1", "SCGB3A1", "WFDC2", "CYP2F1"), ## Club and secretory
-    "Cycling" = c("MKI67", "TOP2A", "POLA2", "CENPF")
-  )
   # Based on HLCA (https://www.nature.com/articles/s41591-023-02327-2)
   markers$epi_markers_hlca <- list(
     "Epithelial" = c("FXYD3", "EPCAM", "ELF3"),
@@ -60,34 +48,6 @@ load_markers <- function() {
     "Cycling" = c("MKI67", "TOP2A", "POLA2", "CENPF"),
     "Hepatocyte" = c("ALB", "HP", "APOB") # ,
     # "PD9/PD27" = c("KDELC2", "ASRGL1", "CEACAM5", "DAB1", "MUC5B")
-  )
-
-  markers$resistance_genes <- c(
-    "EGFR",
-    "MET",
-    "ERBB2",
-    "KRAS",
-    "HRAS",
-    "NRAS",
-    "BRAF",
-    "PIK3CA",
-    "PTEN",
-    "AXL",
-    "CDCP1",
-    "FGFR1",
-    "FGFR2",
-    "FGFR3",
-    "CCND1",
-    "CCND2",
-    "CDKN2A",
-    "CDK6",
-    "CCNE1",
-    "CDK4",
-    "NTRK1",
-    "NTRK2",
-    "NTRK3",
-    "RET",
-    "ALK"
   )
 
   markers$cell_type_markers <- list(

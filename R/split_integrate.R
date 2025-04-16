@@ -56,7 +56,6 @@ split_integrate <- function(srt,
 
     srt <- ScaleData(srt, verbose = T)
     srt <- RunPCA(srt, verbose = T, reduction.name = sketch_pca_name)
-    # srt <- RunPCA(srt, assay = sketch_assay_name, verbose = T)
 
     srt <- IntegrateLayers(
       object = srt,
@@ -64,15 +63,12 @@ split_integrate <- function(srt,
       assay = sketch_assay_name,
       orig.reduction = sketch_pca_name,
       new.reduction = sketch_integrated_name,
-      # new.reduction = "integrated.rpca",
-      # features = VariableFeatures(srt),
       verbose = TRUE
     )
 
     # Harmony doesn't correctly set new reduction name
     if (method == "harmony") {
       srt[[sketch_integrated_name]] <- srt[["harmony"]]
-      # srt[["harmony"]] <- NULL
     }
 
     srt[[sketch_assay_name]] <- JoinLayers(srt[[sketch_assay_name]])
@@ -94,7 +90,6 @@ split_integrate <- function(srt,
     names(spl_var) <- colnames(srt)
     srt[[sketch_assay_name]] <- split(srt[[sketch_assay_name]], f = spl_var)
 
-    # srt[[modality]] <- split(srt[[modality]], f = srt@meta.data[[split_var]])
 
     full_pca_name <- glue::glue("{modality}_{method}_integrated")
     full_umap_name <- glue::glue("{modality}_umap_{method}_integrated")
@@ -123,15 +118,12 @@ split_integrate <- function(srt,
       assay = modality,
       orig.reduction = pca_first_name,
       new.reduction = full_pca_name,
-      # new.reduction = "integrated.rpca",
-      # features = VariableFeatures(srt),
       verbose = TRUE
     )
 
     # Harmony doesn't correctly set new reduction name
     if (method == "harmony") {
       srt[[sketch_integrated_name]] <- srt[["harmony"]]
-      # srt[["harmony"]] <- NULL
     }
   }
 
