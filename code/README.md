@@ -1,10 +1,10 @@
 # Code
 
-Scripts are meant to demonstrate how the data were processed. Note that these are not necessarily runnable as is. Rendered vignettes of select scripts (indicated in **bold**) demonstrating figure reproduction and can be found on the [code website](link).
+Scripts are meant to demonstrate how the data were processed. Note that these are not necessarily runnable as is. Rendered vignettes of select scripts (indicated in **bold**) demonstrating figure reproduction and can be found on the [code website](https://shahcompbio.github.io/egfr_nucseq).
 
 ## Download and convert objects
 
-0. **`0_download_convert.qmd`**: Code to take H5AD objects downloaded from [CELLxGENE](https://cellxgene.cziscience.com) and convert into Seurat objects for [our study](https://cellxgene.cziscience.com/collections/df8ef04c-7a87-49d4-a127-f8d653d89d91), the [LuCA atlas](https://cellxgene.cziscience.com/collections/edb893ee-4066-4128-9aec-5eb2b03f8287).
+0. `0_download_convert.qmd`: Code to take H5AD objects downloaded from [CELLxGENE](https://cellxgene.cziscience.com) and convert into Seurat objects for [our study](https://cellxgene.cziscience.com/collections/df8ef04c-7a87-49d4-a127-f8d653d89d91), the [LuCA atlas](https://cellxgene.cziscience.com/collections/edb893ee-4066-4128-9aec-5eb2b03f8287).
 
 ## Preprocessing
 
@@ -48,7 +48,7 @@ Code to load and plot IMPACT data
 
 ## External Datasets
 
-Analysis code for [LuCA](https://pubmed.ncbi.nlm.nih.gov/36368318/) and TCGA LUAD datasets.
+Analysis code for [LuCA](https://pubmed.ncbi.nlm.nih.gov/36368318/) (scRNA) and TCGA/CPTAC (bulk RNA) LUAD datasets.
 
 20.   `40_luca_ranks.qmd`: UCell ranks for the LuCA Atlas data
 21.   [**`41_luca_analysis.qmd`**](https://shahcompbio.github.io/egfr_nucseq/articles/41_luca_analysis.html): LuCA Analysis
