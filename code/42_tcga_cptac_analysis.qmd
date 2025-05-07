@@ -1,0 +1,258 @@
+---
+title: "TCGA/CPTAC analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+execute: 
+  warning: false
+  error: false
+format: 
+  html:
+    embed-resources: true
+    code-tools: true
+    toc: true
+---
+
+# Introduction
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(ggthemes)
+library(ggsci)
+library(patchwork)
+library(glue)
+library(ggh4x)
+library(patchwork)
+library(Seurat)
+library(ggbeeswarm)
+library(easystats)
+library(tidyverse)
+library(readxl)
+library(here)
+theme_set(theme_classic())
+devtools::load_all()
+colors <- load_colors()
+markers <- load_markers()
+```
+
+
+# TCGA
+
+## Load data
+
+```{r}
+tcga_alts <- read_excel(here("paper_data", "pancan_alteration_matrix.xlsx"), sheet = 2)
+
+tcga_subtypes <- read_excel(here("paper_data", "tcga_subtypes.xlsx"), skip = 2)
+# For clinical outcome endpoints, we recommend the use of PFI for progression-free interval, and OS for overall survival. Both endpoints are relatively accurate. Given the relatively short follow-up time, PFI is preferred over OS. Detailed recommendations please refer to Table 3 in the accompanying paper.
+tcga_clin <- read_excel(here("paper_data/TCGA-CDR-SupplementalTableS1.xlsx"),
+  sheet = "TCGA-CDR",
+)
+
+tcga_purplo <- read.table(here("paper_data", "TCGA_mastercalls.abs_tables_JSedit.fixed.txt"), header = T, sep = "\t")
+
+oncopaths <- c("Cell Cycle", "HIPPO", "MYC", "NOTCH", "NRF2", "PI3K", "TGF-Beta", "RTK RAS", "TP53", "WNT")
+
+tcga_oncopaths_1 <- read_excel(here("paper_data", "tcga_oncopaths.xlsx"), sheet = 1, skip = 2) %>%
+  janitor::clean_names() %>%
+  select(gene, og_tsg) %>%
+  mutate(pathway = oncopaths[1])
+
+tcga_oncopaths <- map(2:10, .f = function(i) {
+  x <- read_excel(here("paper_data", "tcga_oncopaths.xlsx"), sheet = oncopaths[[i]]) %>%
+    janitor::clean_names() %>%
+    select(gene, og_tsg) %>%
+    mutate(pathway = oncopaths[[i]])
+}) %>%
+  list_rbind()
+
+tcga_oncopaths <- rbind(tcga_oncopaths, tcga_oncopaths_1)
+
+impact_oncopaths <- read.table(file = here("paper_data", "impact_pathway_groups.txt"), header = T, sep = "\t")
+
+tcga_clin <- tcga_clin %>%
+  mutate(tumor_stage_simple = case_when(
+    grepl("Stage IV", ajcc_pathologic_tumor_stage) ~ "Stage IV",
+    grepl("Stage III", ajcc_pathologic_tumor_stage) ~ "Stage III",
+    grepl("Stage II", ajcc_pathologic_tumor_stage) ~ "Stage II",
+    grepl("Stage I", ajcc_pathologic_tumor_stage) ~ "Stage I",
+    .default = "Unknown"
+  )) %>%
+  mutate(tumor_stage_simple = fct_relevel(tumor_stage_simple, "Stage I"))
+
+gexp_data <- data.table::fread(file = here("paper_data", "EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv"))
+gexp_data$gene <- str_split(gexp_data$gene_id, pattern = "\\|", simplify = T)[, 1]
+gexp_data$gene_id <- NULL
+gexp_data <- gexp_data[gexp_data$gene != "?" & gexp_data$gene != "SLC35E2", ]
+genes <- gexp_data$gene
+gexp_data$gene <- NULL
+gexp_data <- as.matrix(gexp_data)
+rownames(gexp_data) <- genes
+```
+
+
+```{r}
+pathways <- read.table(here("paper_data", "egfr_pathways.txt"), header = T, sep = "\t")
+
+pathways <- split(pathways$Gene, pathways$pathway)
+pathway_names <- gsub("_GIRARD|_CCLE", "", names(pathways))
+```
+
+
+## Score Pathways
+
+```{r}
+# library(UCell)
+# Code below to compute pathway scores
+# x <- apply(gexp_data, MARGIN = 2, FUN = function(x) {sum(x>100)})
+# ranks_tcga <- UCell::StoreRankings_UCell(matrix = gexp_data, maxRank = 10000, BPPARAM = BiocParallel::MulticoreParam(workers=16, progressbar = T), chunk.size = 100)
+
+# scores_tcga <- UCell::ScoreSignatures_UCell(precalc.ranks = ranks_tcga, BPPARAM = BiocParallel::MulticoreParam(workers=16, progressbar = T), features = pathways, name = "")
+
+# write.table(scores_tcga %>% as.data.frame() %>% rownames_to_column("sample_id"), file = gzfile(here("paper_data", "tcga_pathway_scores.txt.gz")), quote = F, sep = "\t", row.names = F, col.names = T)
+scores_tcga <- read.table(here("paper_data", "tcga_pathway_scores.txt.gz"), header = T, sep = "\t")
+```
+
+
+```{r}
+scores_tcga$SAMPLE_BARCODE <- substr(scores_tcga$sample_id, 1, 15)
+
+tcga_df <- inner_join(scores_tcga, tcga_subtypes) %>%
+  dplyr::rename(
+    "LUAD" = "LUAD_GIRARD",
+    "LUSC" = "LUSC_GIRARD",
+    "SCLC" = "SCLC_CCLE"
+  ) %>%
+  inner_join(tcga_alts) %>%
+  left_join(tcga_clin[, -1], by = c("PATIENT_BARCODE" = "bcr_patient_barcode"))
+
+tcga_df$CDKN2A <- as.numeric(tcga_df$CDKN2A)
+mut_genes_tcga <- tcga_df %>%
+  select(CCND1:WWTR1) %>%
+  colnames()
+
+# Add binary pathway mutation indicator
+tcga_pathway_df <- tcga_df %>%
+  select(sample_id, mut_genes_tcga) %>%
+  pivot_longer(cols = mut_genes_tcga, names_to = "gene", values_to = "mut") %>%
+  left_join(tcga_oncopaths) %>%
+  group_by(sample_id, pathway) %>%
+  summarize(mut = sum(mut) > 0) %>%
+  pivot_wider(id_cols = "sample_id", names_from = "pathway", values_from = mut, values_fn = function(x) sum(x, na.rm = T), values_fill = 0, names_prefix = "path_") %>%
+  janitor::clean_names()
+
+
+impact_pathway_df <- tcga_df %>%
+  select(sample_id, mut_genes_tcga) %>%
+  pivot_longer(cols = mut_genes_tcga, names_to = "gene", values_to = "mut") %>%
+  filter(gene %in% impact_oncopaths$Hugo_symbol) %>%
+  left_join(impact_oncopaths, by = c("gene" = "Hugo_symbol")) %>%
+  group_by(sample_id, Pathway) %>%
+  summarize(mut = sum(mut) > 0) %>%
+  pivot_wider(id_cols = "sample_id", names_from = "Pathway", values_from = mut, values_fn = function(x) sum(x, na.rm = T), values_fill = 0, names_prefix = "pathimpact_") %>%
+  janitor::clean_names()
+
+
+
+tcga_df <- left_join(tcga_df, tcga_pathway_df) %>%
+  left_join(impact_pathway_df) %>%
+  mutate(array = substr(sample_id, 1, 15)) %>%
+  left_join(tcga_purplo)
+
+resist_muts <- markers$resistance_genes[markers$resistance_genes %in% colnames(tcga_df)]
+```
+
+# CPTAC
+
+## Load Data
+
+```{r}
+cp_meta <- read_excel(path = here("paper_data", "cptac_meta.xlsx"), sheet = 2) %>%
+  janitor::clean_names()
+
+cp_gexp <- read_excel(path = here("paper_data", "cptac_lung.xlsx"), sheet = "Table S2D", skip = 2)
+
+gex_mat <- cp_gexp[69:nrow(cp_gexp), 7:ncol(cp_gexp)] %>%
+  as.matrix()
+gex_mat <- apply(gex_mat, MARGIN = 2, as.numeric)
+rownames(gex_mat) <- cp_gexp[69:nrow(cp_gexp), 1, drop = T]
+
+x <- colSums(apply(gex_mat, 1, is.na)) %>%
+  sort(decreasing = T)
+
+gex_mat_delog <- 2^gex_mat
+```
+
+
+```{r}
+# library(UCell)
+
+# x <- apply(gexp_data, MARGIN = 2, FUN = function(x) {sum(x>100)})
+# ranks_cptac <- UCell::StoreRankings_UCell(matrix = gex_mat_delog, maxRank = 10000, BPPARAM = BiocParallel::MulticoreParam(workers=16, progressbar = T), chunk.size = 100)
+#
+# scores_cptac <- UCell::ScoreSignatures_UCell(precalc.ranks = ranks_cptac, BPPARAM = BiocParallel::MulticoreParam(workers=16, progressbar = T), features = pathways, name = "")
+#
+# write.table(scores_cptac %>% as.data.frame() %>% rownames_to_column("sample_id"), file = gzfile(here("paper_data", "cptac_pathway_scores.txt.gz")), quote = F, sep = "\t", row.names = F, col.names = T)
+scores_cptac <- read.table(file = here("paper_data", "cptac_pathway_scores.txt.gz"), header = T, sep = "\t")
+```
+
+
+```{r}
+df_cp <- inner_join(cp_meta, scores_cptac) %>%
+  dplyr::rename(
+    "LUAD" = "LUAD_GIRARD",
+    "LUSC" = "LUSC_GIRARD",
+    "SCLC" = "SCLC_CCLE"
+  )
+
+mut_genes_cp <- df_cp %>%
+  select(ends_with("mutation_status")) %>%
+  colnames()
+
+new_names <- str_to_upper(gsub("_mutation_status", "", mut_genes_cp))
+df_cp[, new_names] <- df_cp[, mut_genes_cp]
+
+df_cp <- df_cp %>%
+  mutate(tumor_stage_simple = case_when(
+    grepl("^4", stage) ~ "Stage IV",
+    grepl("^3", stage) ~ "Stage III",
+    grepl("^2", stage) ~ "Stage II",
+    grepl("^1", stage) ~ "Stage I",
+    .default = "Unknown"
+  )) %>%
+  mutate(tumor_stage_simple = fct_relevel(tumor_stage_simple, "Stage I"))
+
+mut_genes_cp <- new_names
+```
+
+
+# Plot
+
+```{r, fig.width = 6, fig.height = 3}
+df_cp_tum <- df_cp[df_cp$type != "NAT", ]
+df_cp_tum$type <- NULL
+df_cp_tum$DISEASE <- "LUAD"
+df_cp_tum$cohort <- "CPTAC"
+df_cp_tum$purity <- df_cp_tum$tumor_purity_by_estimate_rn_aseq
+tcga_df$cohort <- "TCGA"
+colns_common <- intersect(colnames(tcga_df), colnames(df_cp_tum))
+
+tcga_cptac_combined <- rbind(tcga_df[, colns_common], df_cp_tum[, colns_common])
+
+mapks <- grep("MAPK", colnames(tcga_cptac_combined), value = T)
+
+p1 <- tcga_cptac_combined %>%
+  filter(DISEASE %in% c("LUAD")) %>%
+  ggplot(aes(x = REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES, y = LUAD)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggpubr::stat_cor(geom = "label", method = "pearson", label.x.npc = 0.05, label.y.npc = 0.05, size = 3) +
+  facet_grid(. ~ cohort) +
+  theme(aspect.ratio = 1) +
+  labs(x = "Reactome Nuclear MAPK Signaling", y = "LUAD Signature") +
+  theme_few() +
+  theme(aspect.ratio = 1)
+ggsave(p1, file = here("plots", "tcga_cptac_mapk_cors.pdf"), width = 6, height = 3)
+p1
+```
+

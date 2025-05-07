@@ -1,0 +1,43 @@
+---
+title: "EGFR Load Impact"
+format: html
+---
+
+```{r setup}
+library(tidyverse)
+library(patchwork)
+library(glue)
+library(ComplexHeatmap)
+library(ggh4x)
+library(ggthemes)
+library(here)
+
+devtools::load_all()
+```
+
+
+## Load metadata
+
+We keep `dmp_pid`, `dmp_tumor`, and `dmp_sample` consistent across all tables for easy lookups and merging
+
+```{r}
+# metadata <- load_metadata(nucseq_excel = here("metadata/Nucseq_Shah_Lab_2023_5_24.xlsx"))
+metadata <- read.table(here("metadata", "metadata_update_mar_2025.txt"), header = T, sep = "\t", quote = "\"")
+markers <- load_markers()
+
+
+# This is to be run on Juno where a facets directory exists
+# facets_data <- load_facets(facets_path = "/rtsess01/compute/juno/cmo/juno/work/ccs/shared/resources/impact/facets/",
+#                            dmp_ids = metadata$closest_impact_to_sample,
+#                            here("results", "facets_data.txt"))
+
+impact_data <- load_impact(
+  impact_dir = "/data1/shahs3/users/zatzmanm/work/repos/shared/msk-impact/",
+  facets_data = here("results", "facets_data_dec_2024.txt"),
+  dmp_ids = metadata$closest_impact_to_sample,
+  save_to = here("paper_data", "impact_data.rds")
+)
+
+```
+
+

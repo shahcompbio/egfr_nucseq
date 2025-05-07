@@ -1,0 +1,441 @@
+---
+title: "EGFR Tumor Cell Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+format: 
+  html:
+    code-fold: true
+    code-tools: true
+    code-link: true
+    toc: true
+---
+
+# Introduction
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(ggthemes)
+library(ggsci)
+library(dittoSeq)
+library(ggrepel)
+library(patchwork)
+library(Matrix)
+library(scCustomize)
+library(glue)
+library(ggplotify)
+library(ggh4x)
+library(patchwork)
+library(SingleCellExperiment)
+library(ComplexHeatmap)
+# library(scuttle)
+library(Seurat)
+library(ggbeeswarm)
+# library(monocle3)
+library(here)
+
+devtools::load_all()
+
+colors <- load_colors()
+
+options(Seurat.object.assay.version = "v5")
+
+theme_set(theme_classic())
+
+symnum.args <- list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, Inf), symbols = c("p<0.0001", "p<0.001", "p<0.01", "p<0.05", "ns"))
+symnum_0.1 <- list(cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c(
+  "p<0.0001",
+  "p<0.001", "p<0.01", "p<0.05", "p<0.1", "ns"
+))
+
+symnum_0.1_star <- list(cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c(
+  "****",
+  "***", "**", "*", "^", "ns"
+))
+```
+
+Load object
+
+```{r}
+srt_epi <- readRDS(here("data", "objects", "egfr_epi_v2.rds"))
+
+srt_tum <- srt_epi[, srt_epi$is_tumor_cell]
+```
+
+
+Updated metadata
+
+```{r}
+srt_tum$histology_predominant_short <- fct_recode(srt_tum$histology_predominant,
+  "LUAD" = "Lung Adenocarcinoma",
+  "LUSC" = "Lung Squamous Cell Carcinoma",
+  "SCLC" = "Small Cell Lung Cancer",
+  "Poorly Diff." = "Poorly Differentiated"
+)
+```
+
+
+## Feature Selection
+
+Reduce dimensions just wrt to the genes defining the core signatures
+
+```{r}
+pathways <- read.table(here("metadata", "pathways", "egfr_pathways.txt"), header = T, sep = "\t")
+
+genelist <- filter(pathways, pathway %in% c("SCLC_CCLE", "LUAD_GIRARD", "LUSC_GIRARD")) %>%
+  pull(Gene)
+
+# Also include genes from the tirosh alveolar mp
+meta_programs_df <- read.table(file = "https://raw.githubusercontent.com/mjz1/meta_programs_tirosh/main/tirosh_mp_patched.txt", header = T, sep = "\t")
+
+mp_inc <- filter(meta_programs_df, meta_program %in% c("alveolar"), cell_type == "Malignant")
+
+# Load gene MI table
+mi <- read.table(file = here("01_tumor_cell_analysis", "lung_similarities.tsv"), header = T, sep = "\t")
+mi_top3 <- mi %>%
+  group_by(og_gene) %>%
+  filter(Gene != og_gene) %>%
+  slice_head(n = 3) %>%
+  pull(Gene) %>%
+  c(., genelist) %>%
+  unique()
+
+mi_top3 <- mi_top3[(mi_top3 %in% rownames(srt_tum))]
+
+lung_lineage_genes <- read.table(here("03_trajectory", "hlca_epi_markers.txt"), header = T)
+lung_lineage_genes <- lung_lineage_genes %>%
+  dplyr::filter(Gene %in% rownames(srt_tum)) %>%
+  pull(Gene)
+
+# ti_genelist <- c(mi_top3, mp_inc$Gene, lung_lineage_genes) %>% unique()
+ti_genelist <- c(genelist, lung_lineage_genes, mp_inc$Gene) %>% unique()
+# ti_genelist <- c(mi_top3, mp_inc$Gene, lung_lineage_genes) %>% unique()
+
+
+ti_genelist <- ti_genelist[ti_genelist %in% rownames(srt_tum)]
+
+length(ti_genelist)
+
+# Save a list for the supplemental table
+d1 <- filter(pathways, pathway %in% c("SCLC_CCLE", "LUAD_GIRARD", "LUSC_GIRARD")) %>%
+  select(Gene, source = pathway)
+d2 <- data.frame(Gene = lung_lineage_genes, source = "HLCA")
+d3 <- mp_inc %>%
+  mutate(source = "Malignant Metaprograms") %>%
+  select(Gene, source)
+
+histotime_genes <- rbind(d1, d2, d3) %>%
+  pivot_wider(names_from = Gene, values_from = source, values_fn = function(x) paste(x, collapse = "; ")) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("Gene") %>%
+  dplyr::rename(source = V1) %>%
+  filter(Gene %in% ti_genelist)
+write.table(histotime_genes, file = here("tables", "histotime_genes.txt"), quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+Check feature set overlap
+
+```{r}
+library(eulerr)
+fit <- euler(list("Alveolar MP" = mp_inc$Gene, "Lineage Normal" = lung_lineage_genes, "Lineage Tumor" = genelist))
+plot(fit, quantities = TRUE)
+```
+
+
+
+
+
+
+## PCA approach
+
+```{r}
+keeps <- ti_genelist
+
+cell_sums <- colSums(srt_tum[["RNA"]]$counts[ti_genelist, ])
+
+# Keep cells with a minimum number of counts
+keep_cells <- names(which(cell_sums >= 20))
+
+srt_ti <- srt_tum[keeps, keep_cells]
+
+srt_ti <- ScaleData(srt_ti, features = keeps)
+
+srt_ti <- RunPCA(srt_ti, features = keeps, npcs = 10, reduction.name = "pca_genes")
+
+
+DimPlot(srt_ti, reduction = "pca_genes", group.by = "sample_id")
+FeaturePlot_scCustom(srt_ti, features = c("LUAD", "LUSC", "SCLC"), colors_use = viridis::cividis(20), reduction = "pca_genes", order = T, max.cutoff = "q99", min.cutoff = "q1", na_cutoff = NA, raster = F)
+```
+
+Rotate points
+
+```{r, fig.width = 4, fig.height = 4}
+rot <- -170
+p_rot <- spdep::Rotation(srt_ti[["pca_genes"]]@cell.embeddings[, 1:2], angle = rot * (pi / 180)) %>%
+  as.data.frame() %>%
+  ggplot(aes(x = V1, y = -V2)) +
+  geom_point(size = 0.1) +
+  theme_bw()
+
+p_rot
+```
+
+
+```{r}
+pca_rot <- spdep::Rotation(srt_ti[["pca_genes"]]@cell.embeddings[, 1:2], angle = rot * (pi / 180)) %>%
+  as.data.frame() %>%
+  mutate(V2 = -V2)
+srt_ti[["pca_genes"]]@cell.embeddings[, 1:2] <- as.matrix(pca_rot[, c("V1", "V2")])
+```
+
+
+
+```{r, fig.width = 9, fig.height=7}
+p0 <- DimPlot_scCustom(srt_ti, reduction = "pca_genes", group.by = "time_point", colors_use = colors$time_point)
+
+pfeat <- FeaturePlot_scCustom(srt_ti, features = c("LUAD", "LUSC", "SCLC"), colors_use = viridis::cividis(20), reduction = "pca_genes", order = T, max.cutoff = "q99", min.cutoff = "q1", na_cutoff = NA, raster = F, combine = F)
+
+p0 + pfeat & theme(aspect.ratio = 1)
+```
+
+```{r, fig.width=10, fig.height=4}
+DimHeatmap(srt_ti, reduction = "pca_genes", dims = 1:2, cells = 500, nfeatures = 20)
+```
+
+```{r}
+p0 <- DimPlot_scCustom(srt_ti, reduction = "pca_genes", group.by = "time_point", colors_use = colors$time_point, split.by = "time_point", raster = F)
+p0
+```
+
+
+Plot distribution of cells over PC1
+
+```{r, fig.width=10, fig.height=5}
+p0 <- qplot(srt_ti[["pca_genes"]]@cell.embeddings[, 1], bins = 100)
+
+p1 <- qplot(srt_ti[["pca_genes"]]@cell.embeddings[, 1], srt_ti$LUAD_GIRARD)
+
+p0 | p1
+```
+
+
+## Diffusion map (not using)
+
+```{r}
+# library(slurmR)
+# opts_slurmR <- slurmR::opts_slurmR
+# opts_slurmR$reset()
+# opts_slurmR$set_opts(partition = "componc_cpu")
+# # opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/run/munge/,/etc/slurm/,/usr/lib64/slurm,/usr/lib64/libmunge.so.2' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
+# opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
+# tmp_dir <- here("logs")
+# dir.create(tmp_dir, showWarnings = F, recursive = T)
+```
+
+
+```{r}
+# mat <- t(as.matrix(srt_ti[["RNA"]]$data[ti_genelist,]))
+# # mat <- mat[sample.int(nrow(mat), size = 5000),]
+#
+# ncores <- 16
+# if (FALSE) {
+#   job <- Slurm_lapply(
+#     job_name = "destiny_dm",
+#     njobs = 1,
+#     mc.cores = 16,
+#     tmp_path = tmp_dir,
+#     export = c("mat"),
+#     plan = "submit",
+#     sbatch_opt = list(
+#       partition = "componc_cpu",
+#       mem = "256G",
+#       time = "24:00:00"
+#     ),
+#     X = list(1),
+#     FUN = function(x) {
+#       library(destiny)
+#       dm <- DiffusionMap(mat, k = 20, n_eigs = 10, n_pcs = 30, verbose = T)
+#       saveRDS(dm, file = "/data1/shahs3/users/zatzmanm/work/repos/egfr/data/tumor_diffusion.rds", compress = F)
+#     }
+#   )
+# }
+# dm <- readRDS("/data1/shahs3/users/zatzmanm/work/repos/egfr/data/tumor_diffusion.rds")
+```
+
+```{r}
+# x <- fortify(dm) %>%
+#   rownames_to_column("cell_id") %>%
+#   left_join(srt_ti@meta.data[,c("cell_id", "LUAD", "LUSC", "SCLC")])
+#
+# x %>%
+#   arrange((LUAD)) %>%
+#   ggplot(aes(x = DC1, y = DC2)) +
+#   geom_point(aes(color = LUAD), size = 0.25) +
+#   scale_color_viridis_c(option = "viridis", limits = c(0, quantile(x$LUAD, prob = 0.95, na.rm = T)),
+#                         oob = scales::squish)
+#
+# x %>%
+#   arrange((SCLC)) %>%
+#   ggplot(aes(x = DC1, y = DC2)) +
+#   geom_point(aes(color = SCLC), size = 0.25) +
+#   scale_color_viridis_c(option = "viridis", limits = c(0, quantile(x$SCLC, prob = 0.95, na.rm = T)),
+#                         oob = scales::squish)
+
+# srt_ti[["dm"]] <- CreateDimReducObject(embeddings = dm@eigenvectors, key="DC_", assay="RNA", global = T)
+```
+
+
+##  Slingshot
+
+### GMM Clustering over PCA
+
+```{r}
+library(mclust, quietly = TRUE)
+
+mclus_model_f <- here("results/mclust_pca_v2.rds")
+
+
+if (!file.exists(mclus_model_f)) {
+  cls <- Mclust(srt_ti[["pca_genes"]]@cell.embeddings[, 1:2])
+  saveRDS(cls, mclus_model_f)
+} else {
+  cls <- readRDS(mclus_model_f)
+}
+
+srt_ti$mcluster <- as.factor(cls$classification)
+```
+
+Inspect the clusters and rationally merge them
+
+```{r, fig.width=8, fig.height=8}
+# DimPlot(srt_ti, reduction = "pca_genes", group.by = "mcluster", label = F, ncol = 3)
+
+p1 <- DimPlot(srt_ti, reduction = "pca_genes", group.by = "mcluster", cols = dittoColors(), label = T)
+# DimPlot(srt_ti, reduction = "pca_genes", group.by = "mcluster", label = F, split.by = "mcluster", ncol = 3)
+
+p2 <- VlnPlot(srt_ti, features = c("LUAD_GIRARD", "LUSC_GIRARD", "SCLC_CCLE"), group.by = "mcluster", sort = T, pt.size = 0, cols = dittoColors())
+
+p1 / p2
+```
+
+```{r, fig.width = 12, fig.height = 12}
+DimPlot_scCustom(srt_ti, split.by = "mcluster", reduction = "pca_genes")
+```
+
+```{r}
+srt_ti@meta.data %>%
+  ggplot(aes(x = cell_type_epi)) +
+  geom_bar(aes(fill = mcluster), position = "fill") +
+  scale_fill_manual(values = dittoColors()) +
+  guides(x = guide_axis(angle = 90))
+```
+
+
+Merge clusters rationally
+
+```{r}
+srt_ti$mcluster_merge <- srt_ti@meta.data %>%
+  mutate(mcluster_merge = case_when(
+    mcluster %in% c(7, 3, 8, 4) ~ 1,
+    mcluster %in% c(2, 5, 6) ~ 2,
+    # mcluster %in% c(5) ~ 3,
+    mcluster == 9 ~ 3,
+    # mcluster == 4 ~ 5,
+    mcluster == 1 ~ 4,
+    .default = 0 # Should not be any 0s
+  )) %>%
+  pull(mcluster_merge) %>%
+  factor()
+```
+
+
+```{r, fig.width=8, fig.height=6}
+# DimPlot(srt_ti, reduction = "pca_genes", group.by = "mcluster", label = F, ncol = 3)
+
+p1 <- DimPlot(srt_ti, reduction = "pca_genes", group.by = "mcluster_merge", cols = dittoColors(), label = T)
+# DimPlot(srt_ti, reduction = "pca_genes", group.by = "mcluster", label = F, split.by = "mcluster", ncol = 3)
+
+p1a <- srt_ti@meta.data %>%
+  ggplot(aes(x = mcluster_merge)) +
+  geom_bar(aes(fill = time_point)) +
+  scale_fill_manual(values = colors$time_point) +
+  labs(y = "Cell count")
+
+p1b <- srt_ti@meta.data %>%
+  ggplot(aes(x = mcluster_merge)) +
+  geom_bar(aes(fill = time_point), position = "fill") +
+  scale_fill_manual(values = colors$time_point) +
+  labs(y = "Proportion")
+
+p2 <- VlnPlot(srt_ti, features = c("LUAD_GIRARD", "LUSC_GIRARD", "SCLC_CCLE"), group.by = "mcluster_merge", pt.size = 0, cols = dittoColors())
+
+((p1 | (p1a / p1b) + plot_layout(guides = "collect")) / p2) + plot_annotation(tag_levels = "A")
+```
+
+
+```{r, fig.width=9, fig.height=2.5}
+# Prop of timepoints per cluster
+pc <- srt_ti@meta.data %>%
+  ggplot(aes(x = sample_id_new)) +
+  geom_bar(aes(fill = mcluster_merge), position = "fill") +
+  scale_fill_manual(values = dittoColors()) +
+  facet_nested(. ~ time_point, scales = "free", space = "free") +
+  labs(y = "Proportion") +
+  guides(x = guide_axis(angle = 90))
+pc
+```
+
+
+### Run Slingshot
+
+```{r}
+library(slurmR)
+opts_slurmR <- slurmR::opts_slurmR
+opts_slurmR$reset()
+opts_slurmR$set_opts(partition = "componc_cpu")
+# opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/run/munge/,/etc/slurm/,/usr/lib64/slurm,/usr/lib64/libmunge.so.2' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
+opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
+tmp_dir <- here("logs")
+dir.create(tmp_dir, showWarnings = F, recursive = T)
+```
+
+```{r}
+overwrite <- F
+slingshot_sce_f <- here("data", "objects", "slingshot_sce_v2.rds")
+slingshot_pre_srt <- here("data", "objects", "slingshot_pre_srt_v2.rds") # To remerge afterwards
+
+saveRDS(srt_ti, file = slingshot_pre_srt, compress = F)
+
+ncores <- 16
+if (!file.exists(slingshot_sce_f) | overwrite) {
+  cli::cli_alert_info("Running Slingshot")
+  job <- Slurm_lapply(
+    job_name = "slingshot",
+    njobs = 1,
+    mc.cores = 16,
+    tmp_path = tmp_dir,
+    export = c("slingshot_pre_srt", "slingshot_sce_f"),
+    plan = "submit",
+    sbatch_opt = list(
+      partition = "componc_cpu",
+      mem = "256G",
+      time = "24:00:00"
+    ),
+    X = list(1),
+    FUN = function(x) {
+      library(slingshot)
+      overwrite <- T
+      srt_ti <- readRDS(slingshot_pre_srt)
+
+      sce_ti <- as.SingleCellExperiment(srt_ti)
+
+      sce_ti <- slingshot(sce_ti, clusterLabels = "mcluster_merge", reducedDim = "PCA_GENES", start.clus = "1", end.clus = c("3", "4"), approx_points = 150)
+      saveRDS(sce_ti, slingshot_sce_f)
+    }
+  )
+}
+```
+
+
+

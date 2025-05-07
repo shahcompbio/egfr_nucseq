@@ -1,0 +1,87 @@
+---
+title: "Data Integration"
+format: html
+---
+
+```{r setup}
+library(tidyverse)
+library(BPCells)
+library(Seurat)
+library(glue)
+library(patchwork)
+library(here)
+# set this option when analyzing large datasets
+options(future.globals.maxSize = 3e+09)
+library(bsub)
+devtools::load_all()
+```
+
+
+## Load data
+
+```{r}
+srt_raw <- readRDS(here("data", "objects", "00_egfr_raw.rds"))
+
+# Subset for quality cells and samples
+srt <- srt_raw[, srt_raw$cell_pass == T & srt_raw$status_flag != "SAMPLE:FAILURE" & srt_raw$scDblFinder.class == "singlet"]
+
+srt <- NormalizeData(srt)
+```
+
+Which samples are lost
+
+```{r}
+setdiff(unique(srt_raw$sample_id), unique(srt$sample_id))
+```
+
+Load liftover data
+
+```{r}
+lift <- read.table(file = here("azimuth/egfr_lungref_azimuth_refmapped.txt.gz"), header = T, sep = "\t") %>%
+  column_to_rownames("cell_id")
+
+lift <- lift[colnames(srt), ]
+
+srt <- AddMetaData(srt, lift)
+```
+
+
+```{r}
+out_dir <- here("01_analysis")
+tmp_dir <- file.path(out_dir, "logs")
+
+modality <- "RNA"
+split_var <- "sample_id"
+method <- "rpca"
+
+final_rds <- here("data", "objects", glue("01_integrated_{split_var}_{modality}.rds"))
+
+# for testing
+# srt <- srt_raw[,srt_raw$sample_id %in% c("Hpre9", "Hpost31", "Hpost32")]
+# srt[["RNA"]]$data <- Seurat:::LogNormalize.IterableMatrix(srt[["RNA"]]$counts)
+
+bsub_chunk(
+  name = glue("integrate_{modality}_{split_var}_{method}"),
+  image = T,
+  working_dir = tmp_dir,
+  temp_dir = tmp_dir,
+  output_dir = tmp_dir,
+  hours = 24,
+  memory = 32,
+  cores = 4,
+  code = {
+    options(Seurat.object.assay.version = "v5")
+    devtools::load_all("~/work/repos/egfr")
+    srt <- split_integrate(srt,
+      modality = modality,
+      split_var = split_var,
+      sketch = T,
+      ncells = 3000,
+      method = "rpca"
+    )
+    saveRDS(srt, file = final_rds)
+
+    writeLines(capture.output(devtools::session_info()), glue("integrate_{modality}_{split_var}_{method}.versions"))
+  }
+)
+```

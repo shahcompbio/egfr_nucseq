@@ -1,0 +1,156 @@
+load_colors <- function() {
+  x <- list(
+    "cell_type" = c(
+      "Tumor Cell" = "#e31a1c",
+      "Epithelial" = "#56B4E9",
+      "T-Cell" = "#33a02c",
+      "B-Cell" = "#1f78b4",
+      "Plasma cell" = "#a6cee3",
+      "Myeloid" = "#ff7f00",
+      "Mast Cell" = "#c4a731",
+      "Endothelial" = "#cab2d6",
+      "Fibroblast" = "#6a3d9a",
+      "Other" = "#b3b3b3"
+    ),
+    "time_point" = c(
+      "TN" = "#7aa77f",
+      "MRD" = "#94b6d2",
+      "PD" = "#dc4040"
+    ),
+    "time_point_long" = c(
+      "Treatment-naive" = "#7aa77f",
+      "Minimal Residual Disease" = "#94b6d2",
+      "Progressive Disease" = "#dc4040"
+    ),
+    "sex" = c(
+      "Male" = "#57aed1",
+      "Female" = "#F33A6A"
+    ),
+    "histology_predominant" = c(
+      "Lung Adenocarcinoma" = "#88CCEE",
+      "Lung Squamous Cell Carcinoma" = "#661100",
+      "Small Cell Lung Cancer" = "#DDCC77",
+      "Poorly Differentiated" = "#AA4499"
+    ),
+    "histology_predominant_short" = c(
+      "LUAD" = "#88CCEE",
+      "LUSC" = "#661100",
+      "SCLC" = "#DDCC77",
+      "Poorly Diff." = "#AA4499"
+    ),
+    "mutations" = c(
+      "Missense Mutation" = "#1C91D4",
+      "Nonsense Mutation" = "#D5C711",
+      "Deep Deletion" = "blue",
+      "Amplification" = "red",
+      "Frameshift Indel" = "#D55E00",
+      "Inframe Indel" = "#CC79A7",
+      "RNA Fusion" = "#F0E442",
+      "Structural Variant" = "#56B4E9",
+      "Other" = "#007756"
+    ),
+    "tf" = c(
+      "TRUE" = "black",
+      "FALSE" = "white",
+      "Detected" = "black",
+      "NA" = "grey60",
+      "Undetected" = "grey60",
+      "Not applicable" = "grey60"
+    ),
+    "site_of_tissue_simple" = c(
+      "Primary" = "#56B4E9",
+      "Locoregional" = "#D55E00",
+      "Pleura" = "#999999",
+      "Lymph node" = "#CC79A7",
+      "Bone/soft tissue" = "#009E73",
+      "Liver" = "#F0E442",
+      "Brain" = "#0072B2"
+    ),
+    "Phase" = c(
+      "G1" = "#ffa904",
+      "S" = "#ee7b06",
+      "G2M" = "#a12424"
+    ),
+    "sample_id_new" = c(
+      TN1 = "#E69F00",
+      TN2 = "#56B4E9",
+      TN3 = "#009E73",
+      TN4 = "#F0E442",
+      TN5 = "#0072B2",
+      TN6 = "#D55E00",
+      TN7 = "#CC79A7",
+      TN8 = "#666666",
+      TN9 = "#AD7700",
+      TN10 = "#1C91D4",
+      TN11 = "#007756",
+      TN12 = "#D5C711",
+      TN13 = "#005685",
+      TN14 = "#A04700",
+      TN15 = "#B14380",
+      TN16 = "#4D4D4D",
+      TN17 = "#FFBE2D",
+      TN18 = "#80C7EF",
+      TN19 = "#00F6B3",
+      TN20 = "#F4EB71",
+      TN21 = "#06A5FF",
+      TN22 = "#FF8320",
+      TN23 = "#D99BBD",
+      TN24 = "#8C8C8C",
+      TN25 = "#FFCB57",
+      TN26 = "#9AD2F2",
+      MRD1 = "#2CFFC6",
+      MRD2 = "#F6EF8E",
+      MRD3 = "#38B7FF",
+      MRD4 = "#FF9B4D",
+      MRD5 = "#E0AFCA",
+      MRD6 = "#A3A3A3",
+      PD1 = "#8A5F00",
+      PD2 = "#1674A9",
+      PD3 = "#005F45",
+      PD4 = "#AA9F0D",
+      PD5 = "#00446B",
+      PD6 = "#803800",
+      PD7 = "#8D3666",
+      PD8 = "#3D3D3D",
+      PD9 = "#E69F00",
+      PD10 = "#56B4E9",
+      PD11 = "#009E73",
+      PD12 = "#F0E442",
+      PD13 = "#0072B2",
+      PD14 = "#D55E00",
+      PD15 = "#CC79A7",
+      PD16 = "#666666",
+      PD17 = "#AD7700",
+      PD18 = "#1C91D4",
+      PD19 = "#007756",
+      PD20 = "#D5C711",
+      PD21 = "#005685",
+      PD22 = "#A04700",
+      PD23 = "#B14380",
+      PD24 = "#4D4D4D",
+      PD25 = "#FFBE2D",
+      PD26 = "#80C7EF",
+      PD27 = "#00F6B3",
+      PD28 = "#F4EB71",
+      PD29 = "#06A5FF",
+      PD30 = "#FF8320"
+    ),
+    "cell_type_epi" = c(
+      `AT1-like` = "#56B4E9",
+      `AT2-like` = "#F0E442",
+      `AT2-like PDTC` = "#CC79A7",
+      `Basal-like` = "#D55E00",
+      "PDTC" = "#007756",
+      `PDTC 1` = "#666666",
+      `PDTC 2` = "#007756",
+      `PDTC 3` = "#AD7700",
+      `PDTC 4` = "#009E73",
+      Multiciliated = "#E69F00",
+      Neuroendocrine = "#1C91D4",
+      Cycling = "#0072B2",
+      `Hepatocyte-like` = "#D5C711",
+      `Atypical` = "#005685"
+    )
+  )
+  return(x)
+}

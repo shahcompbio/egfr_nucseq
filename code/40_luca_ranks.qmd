@@ -1,0 +1,80 @@
+---
+title: "LuCA Atlas analysis"
+author: "Matthew Zatzman"
+---
+
+# Introduction
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(glue)
+library(Seurat)
+library(slurmR)
+library(here)
+```
+
+
+
+```{r}
+pathways <- read.table(here("data", "egfr_pathways.txt"), header = T, sep = "\t")
+
+pathways <- split(pathways$Gene, pathways$pathway)
+```
+
+```{r}
+opts_slurmR <- slurmR::opts_slurmR
+opts_slurmR$reset()
+opts_slurmR$set_opts(partition = "componc_cpu")
+opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
+tmp_dir <- here("logs", "score_sigs")
+dir.create(tmp_dir, recursive = T, showWarnings = F)
+```
+
+
+```{r}
+overwrite <- T
+ncores <- 8
+final_out <- here("results", glue("luca_ucell_signatures.txt.gz"))
+luca_f <- here("data", "external_data", "lc_atlas", "luca_extended_ondisk.rds")
+ranks_f <- here("data", "luca_ranks.rds")
+
+if (file.exists(final_out) & !overwrite) {
+  cli::cli_alert_success("Already done")
+} else {
+  job <- Slurm_lapply(
+    job_name = glue("luca_sigs"),
+    njobs = 1,
+    mc.cores = ncores,
+    tmp_path = tmp_dir,
+    export = c("final_out", "luca_f", "ranks_f", "ncores", "pathways"),
+    plan = "submit",
+    sbatch_opt = list(
+      partition = "componc_cpu",
+      mem = "300G",
+      time = "36:00:00"
+    ),
+    X = list(1),
+    FUN = function(x) {
+      luca <- readRDS(luca_f)
+
+      epi_cells <- colnames(luca)[luca$ann_coarse == "Epithelial cell"]
+
+      # Subset for epithelial
+      mat <- as(luca[["RNA"]]$counts[, epi_cells], "dgCMatrix")
+
+      if (!file.exists(ranks_f)) {
+        luca_ranks <- UCell::StoreRankings_UCell(matrix = mat, ncores = ncores, BPPARAM = BiocParallel::MulticoreParam(workers = ncores, progressbar = T))
+        readr::write_rds(luca_ranks, file = ranks_f)
+      } else {
+        luca_ranks <- readRDS(ranks_f)
+      }
+
+      scores <- UCell::ScoreSignatures_UCell(precalc.ranks = luca_ranks, features = pathways, ncores = ncores, name = "")
+
+      write.table((scores %>% as.data.frame() %>% rownames_to_column("cell_id")), file = gzfile(final_out), quote = F, sep = "\t", col.names = T, row.names = T)
+    }
+  )
+}
+```
+

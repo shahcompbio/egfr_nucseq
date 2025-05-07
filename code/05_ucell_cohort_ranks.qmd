@@ -1,0 +1,70 @@
+---
+title: "UCell Ranks"
+author: "Matthew Zatzman"
+---
+
+```{r setup}
+library(tidyverse)
+library(here)
+library(glue)
+library(UCell)
+library(BPCells)
+library(slurmR)
+
+devtools::load_all()
+```
+
+
+Create UCell gene ranks
+
+```{r}
+bp_matrix_dir <- "/data1/shahs3/users/zatzmanm/work/repos/egfr/data/bp_cells/merged_counts/"
+```
+
+Setup slurmR
+
+```{r}
+opts_slurmR <- slurmR::opts_slurmR
+opts_slurmR$reset()
+opts_slurmR$set_opts(partition = "componc_cpu")
+# opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/run/munge/,/etc/slurm/,/usr/lib64/slurm,/usr/lib64/libmunge.so.2' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
+opts_slurmR$set_preamble("singularity exec -B '/data1:/data1' -B '/home/zatzmanm:/home/zatzmanm' /home/zatzmanm/work/images/rstudio/rstudio-latest.sif \\")
+
+out_dir <- here("data")
+tmp_dir <- here("logs")
+ncores <- 16
+```
+
+```{r}
+library(BiocParallel)
+job <- Slurm_lapply(
+  job_name = "ucell_cohort_ranks",
+  njobs = 1,
+  mc.cores = ncores,
+  tmp_path = tmp_dir,
+  export = c("bp_matrix_dir", "out_dir", "ncores"),
+  plan = "submit",
+  sbatch_opt = list(
+    partition = "componc_cpu",
+    mem = "256G",
+    time = "24:00:00"
+  ),
+  X = list(1),
+  FUN = function(x) {
+    out <- file.path(out_dir, "ucell_cohort_ranks.rds")
+
+    obj <- BPCells::open_matrix_dir(bp_matrix_dir)
+
+    counts <- as(obj, "dgCMatrix")
+
+    ranks <- UCell::StoreRankings_UCell(
+      matrix = counts,
+      chunk.size = 2000,
+      BPPARAM = MulticoreParam(workers = ncores, progressbar = T)
+    )
+
+    saveRDS(ranks, file = out)
+  }
+)
+```
+

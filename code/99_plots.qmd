@@ -1,0 +1,2186 @@
+---
+title: "Main plotting script"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+execute: 
+  warning: false
+  error: false
+format: 
+  html:
+    embed-resources: true
+    code-tools: true
+    toc: true
+---
+
+# Setup
+
+```{r setup}
+library(tidyverse)
+library(here)
+library(ggbeeswarm)
+library(ggsci)
+library(ggthemes)
+library(glue)
+library(patchwork)
+library(cowplot)
+library(ggnewscale)
+library(eulerr)
+library(ggh4x)
+library(ggtext)
+library(ComplexHeatmap)
+library(tidyr)
+library(broom.mixed)
+library(scCustomize)
+library(SingleCellExperiment)
+library(Seurat)
+library(dittoSeq)
+library(scatools)
+raster.dpi <- c(1000, 1000)
+
+devtools::load_all()
+
+symnum.args <- list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, Inf), symbols = c("p<0.0001", "p<0.001", "p<0.01", "p<0.05", "ns"))
+symnum_0.1 <- list(cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c(
+  "p<0.0001",
+  "p<0.001", "p<0.01", "p<0.05", "p<0.1", "ns"
+))
+symnum_0.1_star <- list(cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c(
+  "****",
+  "***", "**", "*", "^", "ns"
+))
+colors <- load_colors()
+markers <- load_markers()
+```
+
+# Load Data
+
+```{r}
+db <- load_project()
+```
+
+
+```{r}
+metadata <- readxl::read_excel(here("paper_data", "supplemental_tables.xlsx"), sheet = "Table S1 - Cohort Metadata") %>%
+  as.data.frame()
+metadata$facets_fga <- as.numeric(metadata$facets_fga)
+metadata$facets_ploidy <- as.numeric(metadata$facets_ploidy)
+metadata$facets_purity <- as.numeric(metadata$facets_purity)
+metadata$facets_frac_loh <- as.numeric(metadata$facets_frac_loh)
+metadata$facets_wgd <- as.logical(metadata$facets_wgd)
+metadata$time_point <- fct_relevel(metadata$time_point, "TN", "MRD", "PD")
+metadata$mapk_alt[metadata$sample_id == "PD20"] <- "Unknown" # Need to fix this upstream - sample w/o impact but inferCNV is used for this as well and this sample was negative
+
+
+# We need to load additional metadata to complete the swimmers plot
+addtl_meta <- read.table(file = here("paper_data", "metadata_update_mar_2025.txt"), header = T, sep = "\t", quote = "\"")
+addtl_meta$sample_id_orig <- addtl_meta$sample_id
+addtl_meta$sample_id <- addtl_meta$sample_id_new
+metadata <- left_join(metadata, addtl_meta[,c("sample_id", setdiff(colnames(addtl_meta), colnames(metadata)))])
+
+metadata$sample_id <- fct_relevel(metadata$sample_id, names(colors$sample_id_new))
+
+db$metadata <- metadata
+
+# db$metadata$time_point <- fct_relevel(db$metadata$time_point, "TN", "MRD", "PD")
+
+db$impact_data <- readRDS(here("paper_data", "impact_data.rds"))
+
+db$srt$cell_type <- fct_relevel(db$srt$cell_type, names(colors$cell_type))
+db$srt$time_point <- fct_relevel(db$srt$time_point, "TN", "MRD", "PD")
+db$srt$is_tumor_cell <- as.logical(db$srt$is_tumor_cell)
+db$srt$sample_id <- fct_relevel(db$srt$sample_id, names(colors$sample_id_new))
+
+db$srt_epi$cell_type <- fct_relevel(db$srt_epi$cell_type, names(colors$cell_type))
+db$srt_epi$cell_type_epi <- fct_relevel(db$srt_epi$cell_type_epi, names(colors$cell_type_epi))
+db$srt_epi$time_point <- fct_relevel(db$srt_epi$time_point, "TN", "MRD", "PD")
+db$srt_epi$is_tumor_cell <- as.logical(db$srt_epi$is_tumor_cell)
+db$srt_epi$sample_id <- fct_relevel(db$srt_epi$sample_id, names(colors$sample_id_new))
+
+srt <- db$srt
+srt_epi <- db$srt_epi
+
+pathways <- read.table(here("paper_data", "egfr_pathways.txt"), header = T, sep = "\t")
+```
+
+
+# Plotting
+
+## Figure 1 -- Swimmers plot
+
+### Main panel
+
+```{r, fig.width = 7, fig.height = 15}
+# SETTINGS
+tri_stroke <- 0.25
+tri_size <- 2
+tri_nudge <- 0.275
+######
+swimmers_df <- db$metadata %>%
+  mutate(dx_date = 0) %>%
+  select(sample_id, sample_id_orig, dmp_id, dx_date, procedure, osi_start, osi_end, osi_lot, other_treatment, other_treatment_start, other_treatment_end, other_treatment_lot, other_same_osi, radio_prog, met_date, impact, last_tp, last_followup_status, time_point, histology, has_impact) %>%
+  mutate(
+    # Category to split the timing up
+    t_group = ifelse(last_tp >= 60, ">5years", "<5years"),
+    last_followup_status = fct_recode(last_followup_status,
+      "Alive" = "ALIVE",
+      "Deceased" = "DECEASED"
+    )
+  )
+
+# Pull out treatment information into single table
+treatments_df <- swimmers_df %>%
+  mutate(treatment = "Osimertinib") %>%
+  filter(!is.na(osi_start)) %>%
+  select(sample_id, sample_id_orig, dmp_id, treatment, time_point, last_tp, treatment_start = osi_start, treatment_end = osi_end, lot = osi_lot)
+
+other_treatments_df <- swimmers_df %>%
+  filter(other_same_osi == "different") %>%
+  select(sample_id, sample_id_orig, dmp_id, treatment = other_treatment, time_point, last_tp, treatment_start = other_treatment_start, treatment_end = other_treatment_end, lot = other_treatment_lot) %>%
+  # Clean up treatment name
+  mutate(treatment = gsub(" |rechallenge|now with pemetrexed \\(for metastatic KRAS mutated LC\\)|Breast cancer treatment: |S\\/p| \\(peme maintenance\\)|\\(peme/bev maintenance\\)", "", treatment)) %>%
+  separate_longer_delim(cols = treatment, delim = c("+")) %>%
+  # separate_longer_delim(cols = treatment, delim = c("/")) %>%
+  mutate(
+    treatment_orig = treatment,
+    treatment = case_when(
+      grepl("pembro", treatment, ignore.case = T) ~ "Chemo+IO",
+      grepl("bev", treatment, ignore.case = T) ~ "Chemo+Bev",
+      grepl("carb|peme|pacli", treatment, ignore.case = T) ~ "Chemo",
+      grepl("Osi", treatment, ignore.case = T) ~ "Osimertinib",
+      .default = treatment
+    ),
+    treatment_simple = case_when(
+      grepl("Chemo\\+", treatment) ~ "Chemo combo",
+      .default = treatment
+    )
+  )
+
+treatments_df <- plyr::rbind.fill(treatments_df, other_treatments_df)
+
+# Bind the additional EGFR TKI data
+other_treatments_egfr <- read.table(file = here("paper_data", "other_tkis_update_mar_2025.txt"), header = T, sep = "\t") %>%
+  dplyr::rename(
+    sample_id_orig = sample_id,
+    treatment = AGENT,
+    treatment_start = trt_start,
+    treatment_end = trt_end
+  ) %>%
+  select(sample_id_orig, treatment, treatment_start, treatment_end) %>%
+  left_join(db$metadata[, c("sample_id", "sample_id_orig", "time_point", "last_tp", "dmp_id")]) %>%
+  mutate(treatment_simple = treatment)
+treatments_df <- plyr::rbind.fill(treatments_df, other_treatments_egfr)
+
+osi_df <- treatments_df %>%
+  filter(treatment == "Osimertinib")
+other_treatments_df <- treatments_df %>%
+  filter(treatment != "Osimertinib")
+
+
+# Backgrounds for each timepoint facet and texts
+backgrounds <- map(levels(db$metadata$time_point), .f = function(tp) {
+  element_part_rect(side = "r", fill = colors$time_point[[tp]])
+})
+texts <- map(levels(db$metadata$time_point), .f = function(tp) {
+  element_text(face = "bold", color = "black")
+})
+
+# Facet relabeller
+tp_names <- c(
+  "TN" = "Treatment-Naive",
+  "MRD" = "Residual Disease",
+  "PD" = "Progressive Disease"
+)
+
+# TO NOTE: Some values for met date and impact are <0 by small amount. These are set to zero to allow the x axis sqrt transform.
+swimmers_df$met_date[swimmers_df$met_date < 0] <- 0
+swimmers_df$impact[swimmers_df$impact < 0] <- 0
+
+swimmers_plot <- swimmers_df %>%
+  mutate(sample_id = fct_reorder(sample_id, last_tp, max)) %>%
+  ggplot(aes(y = sample_id)) +
+  # LAST FOLLOWUP
+  geom_segment(aes(x = dx_date, xend = last_tp), linewidth = 1, color = "black") +
+  # OSI INTERVAL
+  geom_segment(data = osi_df, linewidth = 4, aes(x = treatment_start, xend = treatment_end, color = "Osimertinib"), position = position_nudge(y = 0)) +
+  # OTHER TREATMENTS
+  geom_segment(data = other_treatments_df, linewidth = 1.5, aes(x = treatment_start, xend = treatment_end, color = treatment_simple)) +
+  scale_color_manual(
+    na.translate = F,
+    name = "Treatments",
+    values = c(
+      "Osimertinib" = "#a5c1f2",
+      "Erlotinib" = "#0072B5FF",
+      "Dacomitinib" = "#3B96E2",
+      "Afatinib" = "#8B919C",
+      "Chemo combo" = "#BC3C29FF",
+      "Chemo" = "#FFDC91FF",
+      "Crizotinib" = "#20854EFF",
+      "TDM1" = "#EE4C97FF"
+    ),
+    limits = c("Osimertinib", "Erlotinib", "Dacomitinib", "Afatinib", "Chemo combo", "Chemo", "Crizotinib", "TDM1"),
+    guide = guide_legend(order = 3)
+  ) +
+  # LAST STATUS
+  geom_point(aes(x = last_tp, shape = last_followup_status, fill = last_followup_status), size = 2.5, stroke = 0.2) +
+  scale_shape_manual(
+    name = "Last followup", values = c("Alive" = 21, "Deceased" = 22),
+    guide = guide_legend(order = 4)
+  ) +
+  scale_fill_manual(
+    name = "Last followup", values = c("Alive" = "#35aaf2", "Deceased" = "#ab2230"),
+    guide = guide_legend(order = 4)
+  ) +
+  new_scale_fill() +
+  new_scale("shape") +
+  # EVENTS
+  ## MET TIMEPOINT
+  geom_point(aes(x = met_date, fill = "Metastasis"), size = tri_size, stroke = tri_stroke, position = position_nudge(y = tri_nudge), pch = 25) +
+  ## Date of radiographic progression
+  geom_point(aes(x = radio_prog, fill = "Radiographic Progression"), size = tri_size, stroke = tri_stroke, position = position_nudge(y = tri_nudge), pch = 25) +
+  scale_fill_manual(
+    name = "Clinical Event",
+    values = c(
+      "Metastasis" = "red",
+      "Radiographic Progression" = "orange"
+    ), guide = guide_legend(override.aes = list(size = 3), order = 2),
+    limits = c("Metastasis", "Radiographic Progression")
+  ) +
+  new_scale_fill() +
+  ## IMPACT SAMPLE
+  geom_point(aes(x = impact, fill = "IMPACT"), size = tri_size, stroke = tri_stroke, position = position_nudge(y = -tri_nudge), pch = 24) +
+  ## Procedure sample
+  geom_point(aes(x = procedure, fill = "snRNA"), size = tri_size, stroke = tri_stroke, position = position_nudge(y = 0), pch = 23) +
+  scale_fill_manual(
+    name = "Molecular Assay",
+    values = c(
+      "snRNA" = "#33589c",
+      "IMPACT" = "black"
+    ), guide = guide_legend(override.aes = list(size = 3), order = 1),
+    limits = c("snRNA", "IMPACT")
+  ) +
+  # AXIS LABELS
+  labs(x = "Time from initial diagnosis (Years)", y = NULL) +
+  scale_x_sqrt(
+    breaks = c(0, 1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 25, 30),
+    labels = c(0, 1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 25, 30),
+    sec.axis = sec_axis(~.,
+      name = "Time from initial diagnosis (Years)",
+      breaks = c(1e-4, 1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 25, 30),
+      labels = c(0, 1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 25, 30)
+    )
+  ) +
+  facet_grid2(time_point ~ .,
+    scales = "free", space = "free_y", switch = "y",
+    strip = strip_themed(
+      background_y = backgrounds,
+      text_y = texts
+    ),
+    labeller = as_labeller(tp_names)
+  ) +
+  theme_clean() +
+  theme(
+    panel.border = element_part_rect(side = "tblr", fill = NA),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    strip.background = element_part_rect(side = "r", fill = NA, color = "black", linewidth = 1, linetype = "solid"),
+    plot.background = element_blank(),
+    strip.placement = "outside",
+    strip.clip = "off",
+    legend.position = "left"
+  ) +
+  coord_cartesian(clip = "off")
+
+swimmers_plot
+```
+
+
+### Side annotations
+
+```{r, fig.width = 7, fig.height = 13}
+meta_plot <- db$metadata %>%
+  # Add WGD annotation
+  left_join(db$impact_data$facets_data[, c("dmp_pid", "wgd", "ploidy")], by = c("dmp_id" = "dmp_pid")) %>%
+  ggplot(aes(y = fct_rev(sample_id))) +
+  # AGE
+  geom_tile(aes(x = "Age at diagnosis", fill = age_at_intial_diagnosis), color = "black", linewidth = 0.5) +
+  scale_fill_gradientn(
+    name = "Age at Diagnosis", colours = viridis::mako(10),
+    guide = guide_colorbar(order = 2, position = "bottom", keywidth = 5, keyheight = 0.7)
+  ) +
+  new_scale_fill() +
+  # HISTOLOGY
+  geom_tile(aes(x = "Clinical Histology", fill = histology_predominant), color = "black", linewidth = 0.5) +
+  scale_fill_manual(
+    name = "Clinical Histology", values = colors$histology_predominant,
+    breaks = c(
+      "Lung Adenocarcinoma",
+      "Lung Squamous Cell Carcinoma",
+      "Small Cell Lung Cancer",
+      "Poorly Differentiated"
+    ),
+    guide = guide_legend(order = 1, position = "bottom", keywidth = 0.7, keyheight = 1, ncol = 2)
+  ) +
+  new_scale_fill() +
+  # TUMOR STAGE
+  geom_tile(aes(x = "Stage of sample", fill = stage_of_tissue_simple), color = "black", linewidth = 0.5) +
+  geom_tile(aes(x = "Stage at diagnosis", fill = stage_at_initial_diagnosis_simple), color = "black", linewidth = 0.5) +
+  scale_fill_viridis_d(name = "Tumor Stage", guide = guide_legend(order = 4, position = "bottom", keywidth = 0.7, keyheight = 1, ncol = 2)) +
+  new_scale_fill() +
+  # TISSUE SITE
+  geom_tile(aes(x = "Tissue Site", fill = site_of_tissue_simple), color = "black", linewidth = 0.5) +
+  scale_fill_manual(
+    name = "Tissue Site", values = colors$site_of_tissue_simple, breaks = names(colors$site_of_tissue_simple),
+    guide = guide_legend(order = 3, keywidth = 0.7, keyheight = 1, ncol = 2, position = "bottom")
+  ) +
+  new_scale_fill() +
+  geom_tile(aes(x = "Sex", fill = sex), color = "black", linewidth = 0.5) +
+  scale_fill_manual(
+    name = "Sex", values = colors$sex, breaks = names(colors$sex), na.value = "white",
+    guide = guide_legend(order = 6, keywidth = 0.7, keyheight = 1, ncol = 1, position = "bottom")
+  ) +
+  new_scale_fill() +
+  # BINARY (IMPACT, TP53, RB1)
+  geom_tile(aes(x = "IMPACT", fill = has_impact), color = "black", linewidth = 0.5, show.legend = F) +
+  geom_tile(aes(x = "Smoking History", fill = smoking_history_simple), color = "black", linewidth = 0.5, show.legend = F) +
+  geom_tile(aes(x = "WGD", fill = wgd), color = "black", linewidth = 0.5, show.legend = F) +
+  geom_tile(aes(x = "TP53mut", fill = tp53mut), color = "black", linewidth = 0.5, show.legend = F) +
+  geom_tile(aes(x = "RB1mut", fill = rb1mut), color = "black", linewidth = 0.5, show.legend = F) +
+  scale_fill_manual(
+    name = "IMPACT", values = colors$tf, breaks = names(colors$tf), na.value = "white",
+    guide = guide_legend(order = 5)
+  ) +
+  new_scale_fill() +
+  facet_nested(time_point ~ ., scales = "free", space = "free_y") +
+  scale_y_discrete(position = "right", expand = c(0, 0)) +
+  scale_x_discrete(
+    expand = c(0, 0),
+    limits = c("Clinical Histology", "Age at diagnosis", "Tissue Site", "Stage at diagnosis", "Stage of sample", "IMPACT", "WGD", "TP53mut", "RB1mut", "Smoking History", "Sex")
+  ) +
+  guides(
+    x = guide_axis(angle = 55),
+    x.sec = guide_axis(angle = 90)
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_clean() +
+  theme(
+    strip.text.y = element_blank(),
+    panel.border = element_blank(),
+    plot.background = element_blank(),
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(),
+    panel.grid.major.y = element_blank(),
+    legend.key.height = unit(1, "lines"),
+    legend.key.width = unit(0.6, "lines"),
+    legend.title.position = "top", legend.title = element_text(hjust = 0.5)
+  )
+meta_plot
+```
+
+
+### EGFR de novo vs secondary
+
+```{r, fig.width = 9, fig.height = 5}
+egfr_hits <- read.table(file = here("paper_data", "egfr_hits_table.txt"), header = T, sep = "\t") %>%
+  dplyr::rename(sample_id_orig = sample_id) %>%
+  left_join(db$metadata)
+egfr_hits <- egfr_hits %>%
+  mutate(type_name = paste(type, egfr_cat, sep = "_"))
+
+egfr_mat <- egfr_hits %>%
+  mutate(value = 1) %>%
+  pivot_wider(id_cols = c("sample_id"), names_from = "variant", values_from = value, values_fill = 0) %>%
+  column_to_rownames("sample_id") %>%
+  t() %>%
+  memoSort()
+```
+
+
+#### Vertical and aligned
+
+```{r, fig.width = 5, fig.height = 13}
+sample_order <- swimmers_df %>%
+  mutate(sample_id = fct_reorder(sample_id, last_tp, max)) %>%
+  pull(sample_id) %>%
+  levels() %>%
+  as.character()
+
+var_order <- c(
+  "Primary_Exon 19", "Primary_L858R", "Secondary_Amplification",
+  "Primary_G719X", "Primary_T790M", "Secondary_C797S", "Primary_Other"
+)
+
+egfr_hits$sample_id_new <- fct_relevel(egfr_hits$sample_id_new, sample_order)
+
+egfr_hit_plot <- egfr_hits %>%
+  # mutate(denovo = factor(ifelse(grepl("De novo", type_name), "Pre-Osi", "Post-Osi"),
+  #   levels = c("Pre-Osi", "Post-Osi")
+  # )) %>%
+  ggplot(aes(y = sample_id_new, x = fct_relevel(type_name, var_order))) +
+  geom_tile() +
+  facet_nested(time_point ~ "EGFR Mutation" + type, space = "free", scales = "free", switch = "x", strip = strip_nested(clip = "off")) +
+  scale_x_discrete(breaks = var_order, labels = gsub("Primary_|Secondary_", "", var_order), expand = c(0, 0)) +
+  scale_y_discrete(position = "right", expand = c(0, 0)) +
+  guides(x = guide_axis(angle = 55)) +
+  labs(y = "Sample ID", x = NULL) +
+  theme_clean() +
+  theme(axis.line.x = element_blank(), axis.line.y = element_blank(), panel.border = element_rect(fill = NA, color = "black"), plot.background = element_blank(), strip.placement = "outside", strip.background = element_part_rect(side = "l", color = "black", fill = NA, linetype = "solid"), strip.background.x = element_part_rect(side = "t", color = "black", fill = NA, linetype = "solid"))
+
+# Instead do as proportion of the timepoints
+df_egfr_cat_prop <- egfr_hits %>%
+  add_count(time_point, type_name, name = "n_type") %>%
+  complete(time_point, type_name, fill = list(n_type = 0)) %>%
+  add_count(time_point, name = "n_tp") %>%
+  mutate(prop = n_type / n_tp) %>%
+  distinct(time_point, type_name, time_point, n_type, n_tp, prop, type) %>%
+  filter(!is.na(type)) %>%
+  mutate(time_point = fct_relevel(time_point, levels(db$metadata$time_point)))
+
+
+
+egfr_hit_plot_top <- df_egfr_cat_prop %>%
+  ggplot(aes(x = (fct_relevel(type_name, var_order)))) +
+  geom_col(aes(fill = time_point, y = prop), position = "dodge") +
+  scale_x_discrete(breaks = var_order, labels = gsub("Primary_|Secondary_", "", var_order)) +
+  scale_y_continuous(position = "right") +
+  facet_nested(. ~ "EGFR Mutation" + type, space = "free", scales = "free", switch = "y", strip = strip_nested(clip = "off")) +
+  scale_fill_manual(values = colors$time_point) +
+  guides(
+    fill = guide_legend(keywidth = 0.7, keyheight = 1, position = "right"),
+    x = guide_axis(cap = "both", angle = 55),
+    y = guide_axis(cap = "both")
+  ) +
+  theme_clean() +
+  theme(plot.background = element_blank(), axis.line.y.right = element_line(), strip.placement = "outside", strip.background.x = element_part_rect(linetype = "solid", side = "b", color = "black", fill = NA)) +
+  labs(y = "Proportion", x = NULL, fill = "Timepoint")
+pegfr <- (egfr_hit_plot_top + theme(plot.margin = margin(r = 3, unit = "lines"))) + egfr_hit_plot + plot_layout(ncol = 1, heights = c(0.125, 1)) & theme(panel.spacing = unit(0.2, "lines"))
+pegfr
+```
+
+### Combined version
+
+grab legend
+
+```{r, fig.width = 5, fig.height = 13}
+#| output: false
+lgds <- ggpubr::get_legend(meta_plot)
+lgd <- ggpubr::as_ggplot(lgds)
+ggsave(lgd, file = here("plots", "swimmers_anno_legend.pdf"), width = 14, height = 2)
+```
+
+
+##### Plot
+
+```{r, fig.width = 10, fig.height = 14.3}
+spc <- margin(t = 0.2, r = 0.2, b = 0.2, l = 0.2, unit = "lines")
+empty_panel <- plot_spacer() + theme(plot.margin = spc)
+pcomb_ext <- plot_grid(
+  plotlist = list(
+    # empty_panel,
+    # empty_panel,
+    # egfr_hit_plot_top + theme(plot.margin = spc),
+    swimmers_plot + theme(plot.margin = spc) + coord_cartesian(clip = "off"),
+    (meta_plot + theme(
+      legend.position = "none",
+      plot.margin = spc,
+      axis.text.y.right = element_blank(),
+      axis.ticks.y.right = element_blank(),
+      axis.text.x.bottom = element_text(angle = 55),
+      strip.clip = "off"
+    ) + coord_cartesian(clip = "off")),
+    egfr_hit_plot + theme(
+      plot.margin = spc, axis.ticks = element_line(color = "black"),
+      strip.background.y.right = element_blank(),
+      strip.text.y.right = element_blank(),
+      axis.title.y.right = element_blank(),
+      axis.text.x.bottom = element_text(angle = 55)
+    ) + coord_cartesian(clip = "off")
+  ),
+  align = "hv",
+  nrow = 1,
+  ncol = 3,
+  rel_widths = c(1, 0.32, 0.3),
+  # rel_heights = c(0.25, 1),
+  axis = "tb"
+)
+ggsave(pcomb_ext, file = here("plots", "swimmers_plus_annos_muts.pdf"), width = 10, height = 14.3)
+pcomb_ext
+```
+
+##### Top Proportion
+
+```{r, fig.width = 3.5, fig.height = 2.5}
+egfr_hit_plot_top_final <- egfr_hit_plot_top +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.line.x = element_blank(), strip.clip = "off", plot.margin = margin(t = 0.25, b = 1.5, l = 0.25, r = 0.25, unit = "lines"), strip.background = element_blank()) +
+  coord_cartesian(clip = "off") +
+  guides(x = guide_axis(angle = 35, cap = "both"))
+ggsave(egfr_hit_plot_top_final, file = here("plots", "swimmers_mut_prop_top.pdf"), width = 3.5, height = 2.5)
+egfr_hit_plot_top_final
+```
+
+## Figure 2 -- Cohort Overview
+
+### Main Plots
+
+#### Unbatch corrected
+
+```{r, fig.width = 14, fig.height = 8}
+# Patient
+p1 <- DimPlot(srt, reduction = "umapnb", group.by = "site_of_tissue_simple") +
+  umap_theme() +
+  scale_color_manual(values = colors$site_of_tissue_simple, breaks = names(colors$site_of_tissue_simple), labels = label_num_generator(srt$site_of_tissue_simple)) +
+  NoAxes() +
+  labs(title = "Tissue site") +
+  theme(plot.margin = margin(1, 1, 1, 1, "mm"))
+
+p2 <- DimPlot(srt, reduction = "umapnb", group.by = "sample_id") +
+  umap_theme() +
+  scale_color_manual(values = colors$sample_id_new, breaks = names(colors$sample_id_new), labels = label_num_generator(srt$sample_id)) +
+  guides(color = guide_legend(ncol = 3, override.aes = list(size = 3))) +
+  NoAxes() +
+  labs(title = "Patient") +
+  theme(plot.margin = margin(8, 1, 1, 1, "mm"))
+
+p3 <- DimPlot(srt, reduction = "umapnb", group.by = "time_point", order = "MRD") +
+  umap_theme() +
+  NoAxes() +
+  scale_color_manual(values = colors$time_point, breaks = names(colors$time_point), labels = label_num_generator(srt$time_point)) +
+  labs(title = "Timepoint") +
+  theme(plot.margin = margin(1, 1, 1, 1, "mm"))
+
+# Cell types
+p4 <- DimPlot(srt, group.by = "cell_type", reduction = "umapnb") +
+  umap_theme() +
+  NoAxes() +
+  scale_color_manual(values = colors$cell_type, breaks = names(colors$cell_type), labels = label_num_generator(srt$cell_type)) +
+  labs(title = "Cell Type") +
+  theme(plot.margin = margin(1, 1, 1, 1, "mm"))
+
+pcomb <- p4 + p2 + p1 + p3 + plot_layout(ncol = 2) & theme(aspect.ratio = 1, legend.box.margin = margin(), legend.margin = margin())
+ggsave(pcomb, file = here("plots", "cohort_umap_combined_nobatch.pdf"), width = 14, height = 8)
+pcomb
+```
+
+#### Batch corrected
+
+```{r, fig.width = 14, fig.height = 7}
+# Patient
+p1 <- DimPlot(srt, reduction = "umap", group.by = "site_of_tissue_simple", shuffle = T) +
+  umap_theme() +
+  scale_color_manual(values = colors$site_of_tissue_simple, breaks = names(colors$site_of_tissue_simple), labels = label_num_generator(srt$site_of_tissue_simple)) +
+  NoAxes() +
+  labs(title = "Tissue site")
+
+p2 <- DimPlot(srt, reduction = "umap", group.by = "sample_id") +
+  umap_theme() +
+  scale_color_manual(values = colors$sample_id_new, breaks = names(colors$sample_id_new), labels = label_num_generator(srt$sample_id)) +
+  NoAxes() +
+  labs(title = "Patient")
+
+p3 <- DimPlot(srt, reduction = "umap", group.by = "time_point", order = "MRD") +
+  umap_theme() +
+  NoAxes() +
+  scale_color_manual(values = colors$time_point, breaks = names(colors$time_point), labels = label_num_generator(srt$time_point)) +
+  labs(title = "Timepoint")
+
+# Cell types
+p4 <- DimPlot(srt, group.by = "cell_type", reduction = "umap") +
+  umap_theme() +
+  NoAxes() +
+  scale_color_manual(values = colors$cell_type, breaks = names(colors$cell_type), labels = label_num_generator(srt$cell_type)) +
+  labs(title = "Cell Type")
+
+pcomb <- wrap_plots(p4, p2, p1, p3) & theme(aspect.ratio = 1)
+ggsave(pcomb, file = here("plots", "cohort_umap_combined_batch.pdf"), width = 14, height = 7)
+pcomb
+```
+
+
+```{r, fig.width = 14, fig.height = 7}
+# For supplement: patient and tissue site
+pcomb2 <- wrap_plots(p2, p1, byrow = F) + plot_layout(nrow = 1) & theme(aspect.ratio = 1, plot.margin = margin(1, 1, 1, 1, "mm"))
+ggsave(pcomb2, file = here("plots", "cohort_umap_combined_batch_supp.pdf"), width = 15, height = 5)
+pcomb2
+```
+
+Select for main
+
+```{r, fig.width = 9, fig.height = 3}
+p3 <- DimPlot(srt, reduction = "umap", group.by = "time_point", order = "On") +
+  umap_theme() +
+  NoAxes() +
+  scale_color_manual(values = colors$time_point, breaks = names(colors$time_point)) +
+  labs(title = "Timepoint")
+
+# Cell types
+p4 <- DimPlot(srt, group.by = "cell_type", reduction = "umap") +
+  umap_theme() +
+  NoAxes() +
+  scale_color_manual(values = colors$cell_type, breaks = names(colors$cell_type)) +
+  labs(title = "Cell Type")
+
+cohort_umap_tumor_cells <- DimPlot(srt, group.by = "is_tumor_cell", cols = list("TRUE" = as.character(colors$cell_type["Tumor Cell"]), "FALSE" = "grey90")) +
+  labs(title = NULL) +
+  theme(aspect.ratio = 1, legend.key.spacing = unit(0.1, "lines")) +
+  umap_theme() +
+  NoAxes() +
+  NoLegend() +
+  labs(title = "Tumor Cells")
+
+pcomb <- wrap_plots(p4, p3, byrow = F) + plot_layout(nrow = 1) & theme(aspect.ratio = 1, plot.margin = margin(1, 1, 1, 1, "mm"))
+pcomb
+ggsave(pcomb, file = here("plots", "cohort_umap_combined_batch_main2.pdf"), width = 8, height = 3)
+```
+
+
+### Cell Type Markers
+
+```{r, fig.width = 9, fig.height = 3}
+ct_markers <- markers$cell_type_markers
+
+names(ct_markers) <- map(names(ct_markers), .f = function(ct) {
+  ct_col <- colors$cell_type[ct]
+  ct_colname <- glue("<b style='color:{ct_col}'>{ct}</b>")
+  return(ct_colname)
+}) %>%
+  list_c()
+
+
+
+srt$cell_type_col <- factor(srt$cell_type, levels = levels(srt$cell_type), labels = glue("<b style='color:{colors$cell_type[levels(srt$cell_type)]}'>{levels(srt$cell_type)}</b>"))
+
+
+pl <- DotPlotter(srt, features = ct_markers, group.by = "cell_type_col", cluster_groups = F, rotate_y_strip = F) +
+  theme(
+    strip.clip = "off",
+    axis.line = element_blank(),
+    strip.text.x = element_markdown(),
+    axis.text.y = element_markdown()
+  )
+
+ggsave(pl, file = here("plots", "cell_type_markers_dotplot.pdf"), width = 9, height = 3)
+pl
+```
+
+
+### Specificity plots
+
+Check all four
+
+```{r, fig.width = 6, fig.height = 6}
+cls_order <- levels(fct_reorder(db$spec$cell_type$cid2, db$spec$cell_type$cid1_purity, median))
+
+spec_pls <- map(names(db$spec), .f = function(l) {
+  df <- db$spec[[l]]
+
+  p1 <- df %>%
+    filter(cid2 != "Other") %>%
+    ggplot(aes(x = fct_relevel(cid2, cls_order), y = cid1_purity)) +
+    geom_violin(scale = "width", aes(fill = cid2), show.legend = F) +
+    scale_y_continuous(breaks = seq(0, 1, by = 0.5)) +
+    geom_pointrange(
+      stat = "summary", fatten = 0.8,
+      fun.min = function(z) {
+        quantile(z, 0.25)
+      },
+      fun.max = function(z) {
+        quantile(z, 0.75)
+      },
+      fun = median
+    ) +
+    guides(
+      x = guide_axis(angle = 45, cap = "both"),
+      y = guide_axis(cap = "both")
+    ) +
+    scale_fill_manual(values = colors$cell_type) +
+    labs(x = "Cell Type", y = "Specificity", title = l) +
+    ggpubr::stat_compare_means(comparisons = list(c("Tumor Cell", "Epithelial")), tip.length = 0.05, label.y = 1.05, method = "wilcox", size = 2, vjust = -0.5) +
+    coord_cartesian(clip = "off")
+})
+names(spec_pls) <- names(db$spec)
+
+pcomb <- wrap_plots(spec_pls, ncol = 2) &
+  theme(axis.title.y = element_text(hjust = 0.4))
+ggsave(pcomb, file = here("plots", "all_specificity_plots.pdf"), width = 6, height = 6)
+pcomb
+```
+
+```{r, fig.width = 2.85, fig.height = 3}
+p1 <- spec_pls$cell_type + labs(title = NULL, y = "Patient\nspecificity\n(uncorrected)")
+
+p2 <- spec_pls$timepoint_batch + labs(title = NULL, y = "Timepoint\nspecificity\n(corrected)")
+
+pcomb <- p1 + p2 + plot_layout(ncol = 1, axes = "collect") & labs(x = NULL) & guides(x = guide_axis(angle = 45, cap = "both"))
+ggsave(pcomb, file = here("plots", "sample_timepoint_specificity_v2.pdf"), width = 2.85, height = 3)
+
+pcomb
+```
+
+```{r, fig.width = 3, fig.height = 2}
+p1 <- spec_pls$cell_type_batch + labs(title = NULL, y = "Patient\nspecificity\n(corrected)")
+
+
+pcomb <- p1 + labs(x = NULL) + guides(x = guide_axis(angle = 45, cap = "both"))
+ggsave(pcomb, file = here("plots", "specificity_patient_corrected_supp.pdf"), width = 3, height = 2)
+
+pcomb
+```
+
+
+### Density based tumor cells
+
+#### Over cohort object
+
+```{r, fig.width=7, fig.height=3}
+df_raw <- FetchData(srt, vars = c("time_point", "is_tumor_cell", "cell_type", "Xumap_1", "Xumap_2")) %>%
+  dplyr::rename("UMAP1" = "Xumap_1", "UMAP2" = "Xumap_2")
+
+df <- df_raw %>%
+  filter(is_tumor_cell)
+
+devtools::load_all()
+df <- df %>%
+  group_by(time_point, cell_type) %>%
+  mutate(density = get_density(UMAP1, UMAP2, n = 500)) %>%
+  mutate(density_scaled = standardize(density))
+
+df$time_point_col <- factor(df$time_point,
+  levels = levels(df$time_point),
+  labels = glue("<b style='color:{colors$time_point[levels(df$time_point)]}'>{levels(df$time_point)}</b>")
+)
+
+p <- df %>%
+  ungroup() %>%
+  arrange((density_scaled)) %>%
+  ggplot(aes(x = UMAP1, y = UMAP2)) +
+  ggrastr::rasterize(geom_point(aes(color = density_scaled), size = 0.1), dpi = 600) +
+  facet_wrap(~time_point_col) +
+  scale_color_gradientn(colours = viridis::turbo(10)) +
+  guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) +
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_markdown(size = 16),
+    aspect.ratio = 1, panel.background = element_rect(fill = NA, color = "black"),
+    plot.title = element_text(hjust = 0.5, size = 18),
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text = element_blank()
+  ) +
+  labs(x = "UMAP1", y = "UMAP2", title = NULL, color = "Tumor Cell\nDensity")
+ggsave(p, file = here("plots", "tumor_cell_density.pdf"), width = 7, height = 3)
+p
+```
+
+#### Over epithelial object
+
+```{r, fig.width=7, fig.height=3}
+library(ggtext)
+df <- FetchData(srt_epi, vars = c("time_point", "is_tumor_cell", "cell_type", "Xumap_1", "Xumap_2", "tp53mut", "rb1mut", "has_impact")) %>%
+  dplyr::rename("UMAP1" = "Xumap_1", "UMAP2" = "Xumap_2") %>%
+  filter(is_tumor_cell)
+
+# Group by timepoint and calculate scaled density per group
+df_dens <- df %>%
+  group_by(time_point, cell_type) %>%
+  mutate(density = get_density(UMAP1, UMAP2, n = 500)) %>%
+  mutate(density_scaled = standardize(density))
+
+df_dens$time_point_col <- factor(df_dens$time_point,
+  levels = levels(df$time_point),
+  labels = glue("<b style='color:{colors$time_point[levels(df_dens$time_point)]}'>{levels(df_dens$time_point)}</b>")
+)
+
+p <- df_dens %>%
+  ungroup() %>%
+  arrange((density_scaled)) %>%
+  ggplot(aes(x = UMAP1, y = UMAP2)) +
+  ggrastr::rasterize(geom_point(aes(color = density_scaled), size = 0.1), dpi = 600) +
+  facet_wrap(~time_point_col) +
+  scale_color_gradientn(colours = viridis::turbo(10), name = "Density") +
+  guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) +
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_markdown(size = 16),
+    aspect.ratio = 1, panel.background = element_rect(fill = NA, color = "black"),
+    plot.title = element_text(hjust = 0.5, size = 18),
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text = element_blank()
+  ) +
+  labs(x = "UMAP1", y = "UMAP2", title = "Tumor Cell Density")
+ggsave(p, file = here("plots", "tumor_cell_density_epi.pdf"), width = 7, height = 3)
+p
+```
+
+##### TP53mut
+
+```{r, fig.width = 5, fig.height = 3}
+# Group by timepoint and calculate scaled density per group
+df_dens_tp53 <- df %>%
+  mutate(TP53mut = case_when(
+    has_impact == "FALSE" ~ "NA",
+    tp53mut == "TRUE" ~ "TP53mut",
+    tp53mut == "FALSE" ~ "TP53wt",
+    .default = "Other"
+  )) %>%
+  group_by(time_point, cell_type, TP53mut) %>%
+  mutate(density = get_density(UMAP1, UMAP2, n = 500)) %>%
+  mutate(density_scaled = standardize(density))
+
+
+
+df_dens_tp53$time_point_col <- factor(df_dens_tp53$time_point,
+  levels = levels(df_dens_tp53$time_point),
+  labels = glue("<b style='color:{colors$time_point[levels(df_dens_tp53$time_point)]}'>{levels(df_dens_tp53$time_point)}</b>")
+)
+# TN only
+p <- df_dens_tp53 %>%
+  filter(TP53mut != "NA", time_point == "TN") %>%
+  ungroup() %>%
+  arrange((density_scaled)) %>%
+  ggplot(aes(x = UMAP1, y = UMAP2)) +
+  ggrastr::rasterise(geom_point(aes(color = density_scaled), size = 0.1), dpi = 600) +
+  facet_grid(time_point_col ~ fct_rev(TP53mut)) +
+  scale_color_gradientn(colours = viridis::turbo(10), name = "Density") +
+  guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) +
+  theme(
+    strip.background = element_blank(),
+    strip.text.y = element_markdown(size = 16),
+    aspect.ratio = 1, panel.background = element_rect(fill = NA, color = "black"),
+    plot.title = element_text(hjust = 0.5, size = 18),
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text = element_blank()
+  ) +
+  labs(x = "UMAP1", y = "UMAP2")
+ggsave(p, file = here("plots", "TP53mut_tumor_cell_density_TNonly.pdf"), width = 5, height = 3)
+p
+```
+
+### Cell Type Composition
+
+```{r, fig.width = 4.5, fig.height = 2.5}
+p <- srt@meta.data %>%
+  add_count(sample_id, name = "sample_n") %>%
+  add_count(sample_id, cell_type, name = "cell_type_n") %>%
+  mutate(prop = cell_type_n / sample_n) %>%
+  distinct(sample_id, cell_type, time_point, sample_n, cell_type_n, prop) %>%
+  filter(cell_type != "Other") %>%
+  ggplot(aes(x = cell_type, y = prop)) +
+  geom_boxplot(aes(fill = time_point), outlier.size = 0.25, fatten = 1.5) +
+  scale_fill_manual(values = colors$time_point) +
+  labs(x = "Cell Type", y = "Proportion", fill = "Timepoint") +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.2)) +
+  guides(
+    x = guide_axis(cap = "both", angle = 45),
+    y = guide_axis(cap = "both")
+  ) +
+  ggpubr::geom_pwc(tip.length = 0, symnum.args = symnum_0.1_star, label = "p.adj.signif", aes(group = time_point), hide.ns = T, vjust = 0.5, method = "wilcox_test", step.increase = 0.05) +
+  coord_cartesian(clip = "off")
+ggsave(p, file = here("plots", "cohort_timepoint_cell_type_prop.pdf"), width = 4.5, height = 2.5)
+p
+```
+
+```{r, fig.width=10, fig.height = 4}
+p1 <- srt@meta.data %>%
+  ggplot(aes(x = sample_id)) +
+  geom_bar(aes(fill = cell_type)) +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  guides(x = guide_axis(angle = 90)) +
+  scale_fill_manual(values = colors$cell_type) +
+  labs(fill = "Cell Type", y = "Count", x = "Sample") +
+  guides(fill = guide_legend(keywidth = 0.4, keyheight = 0.2)) +
+  theme_clean()
+
+p2 <- srt@meta.data %>%
+  ggplot(aes(x = sample_id)) +
+  geom_bar(aes(fill = cell_type), position = "fill") +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  guides(
+    x = guide_axis(angle = 90),
+    y = guide_axis(cap = "none")
+  ) +
+  scale_fill_manual(values = colors$cell_type) +
+  labs(fill = "Cell Type", y = "Proportion", x = "Sample") +
+  guides(fill = guide_legend(keywidth = 0.4, keyheight = 0.2)) +
+  theme_clean()
+
+# Final formatting
+p1 <- p1 + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) + labs(x = NULL)
+p2 <- p2 + theme(strip.text.x = element_blank())
+
+pcomb <- p1 + p2 + plot_layout(guides = "collect", axes = "collect", ncol = 1) & theme(plot.background = element_blank()) & scale_y_continuous(expand = c(0, 0))
+ggsave(pcomb, file = here("plots", "sample_cellcounts_barplot.pdf"), width = 10, height = 4)
+pcomb
+```
+
+
+### Tumor cellularity
+
+```{r, fig.width = 9, fig.height = 2.5}
+df <- srt@meta.data %>%
+  add_count(sample_id, cell_type, name = "n_ct") %>%
+  add_count(sample_id, name = "n_samp") %>%
+  mutate(ct_prop = n_ct / n_samp) %>%
+  distinct(sample_id, cell_type, ct_prop, n_ct, n_samp, procedure_type) %>%
+  pivot_wider(id_cols = sample_id, names_from = cell_type, values_from = ct_prop, values_fill = 0) %>%
+  pivot_longer(cols = !sample_id, names_to = "cell_type", values_to = "cell_type_prop") %>%
+  left_join(db$metadata)
+
+# How many samples w/no tumor
+tum_prop <- df %>%
+  filter(cell_type == "Tumor Cell") %>%
+  pull(cell_type_prop)
+# sum(tum_prop == 0)
+# max(tum_prop)
+p <- df %>%
+  filter(cell_type == "Tumor Cell") %>%
+  ggplot(aes(x = fct_reorder(sample_id, -cell_type_prop, mean), y = cell_type_prop)) +
+  geom_col(aes(fill = time_point), show.legend = F) +
+  scale_fill_manual(values = colors$time_point) +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  theme_clean() +
+  theme(strip.background = element_blank()) +
+  coord_cartesian(ylim = c(0, 1), clip = "off") +
+  scale_y_continuous(expand = c(0, 0)) +
+  guides(
+    x = guide_axis(angle = 90),
+    y = guide_axis(cap = "none")
+  ) +
+  labs(x = "Sample", y = "Tumor Cell Proportion")
+
+p2 <- df %>%
+  filter(cell_type == "Tumor Cell") %>%
+  ggplot(aes(x = time_point, y = cell_type_prop)) +
+  geom_boxplot(aes(fill = time_point), show.legend = F) +
+  scale_fill_manual(values = colors$time_point) +
+  theme_clean() +
+  scale_y_continuous(expand = c(0, 0), breaks = seq(0, 1, by = 0.25)) +
+  guides(
+    x = guide_axis(angle = 45, cap = "none"),
+    y = guide_axis(cap = "both")
+  ) +
+  labs(x = "Timepoint", y = "Tumor Cell Proportion") +
+  coord_cartesian(clip = "off", ylim = c(0, 1)) +
+  ggpubr::geom_pwc(tip.length = 0, label = "p.adj.signif", symnum.args = symnum_0.1_star, hide.ns = T, vjust = 0.2)
+pcomb <- p + free(p2, type = "label", side = "b") + plot_layout(ncol = 2, widths = c(1, 0.1), axes = "collect") &
+  theme(plot.background = element_blank())
+ggsave(pcomb, file = here("plots", "tumor_cell_proportion_barplot.pdf"), width = 9, height = 2.5)
+pcomb
+```
+
+Cellularity by tumor site
+
+```{r, fig.width = 7, fig.height = 3}
+p1 <- df %>%
+  filter(cell_type == "Tumor Cell") %>%
+  ggplot(aes(x = fct_relevel(site_of_tissue_simple, names(colors$site_of_tissue_simple)), y = cell_type_prop)) +
+  geom_boxplot(aes(fill = site_of_tissue_simple), show.legend = F) +
+  geom_quasirandom(alpha = 0.5) +
+  scale_fill_manual(values = colors$site_of_tissue_simple) +
+  theme_clean() +
+  scale_y_continuous(expand = c(0, 0), breaks = seq(0, 1, by = 0.25)) +
+  guides(
+    x = guide_axis(angle = 0, cap = "none"),
+    y = guide_axis(cap = "both")
+  ) +
+  labs(x = "Tissue Site", y = "Tumor Cell Proportion") +
+  coord_cartesian(clip = "off", ylim = c(0, 1))
+
+p2 <- df %>%
+  filter(cell_type == "Tumor Cell") %>%
+  ggplot(aes(x = fct_relevel(procedure_type, "Biopsy", "Fresh Frozen", "Resection"), y = cell_type_prop)) +
+  geom_boxplot(aes(fill = procedure_type), show.legend = F) +
+  geom_quasirandom(alpha = 0.5) +
+  scale_fill_manual(values = dittoColors()) +
+  theme_clean() +
+  scale_y_continuous(expand = c(0, 0), breaks = seq(0, 1, by = 0.25)) +
+  guides(
+    x = guide_axis(angle = 0, cap = "none"),
+    y = guide_axis(cap = "both")
+  ) +
+  labs(x = "Procedure Type", y = "Tumor Cell Proportion") +
+  coord_cartesian(clip = "off", ylim = c(0, 1))
+
+pcomb <- p1 + p2 + plot_layout(ncol = 2) &
+  theme_classic() &
+  ggpubr::stat_compare_means(label.x.npc = 0.1) &
+  guides(x = guide_axis(angle = 45))
+ggsave(pcomb, file = here("plots", "tumor_cellularity_site_procedure.pdf"), width = 7, height = 3)
+pcomb
+```
+
+
+### InferCNV plots
+
+```{r, fig.width = 13, fig.height = 8}
+sce <- readRDS(here("paper_data", "egfr_cohort_cnv.rds"))
+sce$sample_id <- srt$sample_id[match(colnames(sce), srt$cell_id)]
+sce$cell_type <- srt$cell_type[match(colnames(sce), srt$cell_id)]
+sce$time_point <- srt$time_point[match(colnames(sce), srt$cell_id)]
+
+sce <- sce[, sce$sample_id %in% unique(srt$sample_id) & sce$cell_type %in% c("Tumor Cell", "Epithelial")]
+
+mat <- assay(sce) %>%
+  t() %>%
+  log2()
+
+df_anno <- colData(sce) %>%
+  as.data.frame() %>%
+  select(cell_type, time_point, sample_id) %>%
+  arrange(time_point, sample_id, cell_type)
+
+df_anno$cell_type <- factor(df_anno$cell_type)
+
+mat <- mat[rownames(df_anno), ]
+
+anno_cols <- list(
+  "time_point" = colors$time_point,
+  "cell_type" = colors$cell_type[unique(df_anno$cell_type)],
+  "sample_id" = colors$sample_id_new
+)
+
+left_anno <- HeatmapAnnotation(
+  df = df_anno,
+  annotation_label = c("Cell Type", "Timepoint", "Sample"),
+  which = "row", show_legend = c(T, T, T), col = anno_cols,
+  annotation_legend_param = list(
+    "sample_id" = list(
+      ncol = 3
+    )
+  )
+)
+
+# Split columns by chromosome
+chrs <- as.vector(gsub("chr", "", GenomeInfoDb::seqnames(SummarizedExperiment::rowRanges(sce))))
+col_split <- factor(chrs, levels = unique(gtools::mixedsort(chrs)))
+
+ht <- Heatmap(
+  matrix = mat,
+  name = "Log2Ratio",
+  left_annotation = left_anno,
+  col = logr_col_fun(breaks = c(-0.05, -0.01, 0.01, 0.05), colors = c("blue", "white", "white", "red")),
+  cluster_rows = F,
+  cluster_columns = F,
+  show_column_dend = F,
+  show_row_dend = F,
+  show_row_names = F,
+  show_column_names = F,
+  column_split = col_split,
+  row_split = df_anno$cell_type,
+  raster_by_magick = F, raster_device = "CairoPNG",
+  border = T,
+  raster_quality = 25
+)
+
+pdf(here("plots/cohort_cnv_heatmap.pdf"), width = 13, height = 8)
+draw(ht)
+dev.off()
+suppressWarnings(draw(ht))
+```
+
+## Figure 3 -- Epithelial Cells
+
+### UMAP
+
+```{r, fig.width = 6.75, fig.height = 4.25}
+lab_cents <- scatools:::get_label_centers(obj = srt_epi, group_var = "cell_type_epi", reduced_dim = "umap")
+
+df_leg <- srt_epi@meta.data %>%
+  add_count(cell_type_epi, name = "epi_n") %>%
+  distinct(cell_type_epi, epi_n) %>%
+  mutate(label = glue("({prettyNum(epi_n, big.mark = ',')})"))
+
+p1_leg <- df_leg %>%
+  ggplot(aes(y = fct_rev(cell_type_epi), x = epi_n)) +
+  geom_point(aes(x = -10000, color = cell_type_epi), size = 3.5) +
+  geom_col(aes(fill = cell_type_epi), width = 0.5) +
+  geom_text(aes(x = epi_n, label = label), size = 3, hjust = -0.1, color = "black") +
+  scale_fill_manual(values = colors$cell_type_epi) +
+  scale_color_manual(values = colors$cell_type_epi) +
+  coord_cartesian(clip = "off") +
+  theme(
+    strip.placement = "outside",
+    strip.background.y = element_part_rect(side = "r", fill = NA),
+    axis.ticks = element_blank(),
+    axis.line = element_blank(),
+    axis.text.x = element_blank(),
+    strip.text.y.left = element_text(angle = 0, hjust = 1),
+    plot.margin = margin(1, 4, 1, 1, unit = "lines")
+  ) +
+  labs(x = NULL, y = NULL) +
+  scale_x_continuous(expand = c(0.025, 0)) +
+  guides(x = guide_axis(cap = "both")) +
+  NoLegend()
+
+p1 <- DimPlot(srt_epi, reduction = "umap", group.by = "cell_type_epi", shuffle = T, raster.dpi = c(350, 350)) +
+  umap_theme() +
+  ggrepel::geom_text_repel(
+    data = lab_cents, aes(x = x, y = y, label = cell_type_epi),
+    min.segment.length = 0,
+    segment.size = 0.75,
+    fontface = "bold",
+    force = 5,
+    bg.colour = "white",
+    max.iter = 1e9,
+    bg.r = 0.1,
+    position = ggpp::position_nudge_center(center_x = 2, center_y = 2, direction = "radial", x = 0, y = 0)
+  ) +
+  scale_color_manual(values = colors$cell_type_epi, labels = label_num_generator(srt_epi$cell_type_epi), breaks = levels(srt_epi$cell_type_epi)) +
+  NoAxes() +
+  NoLegend() +
+  theme(aspect.ratio = 1) +
+  labs(title = "Epithelial Cells")
+
+layout <- c(
+  area(t = 10, b = 100, l = 1, r = 100),
+  area(t = 4, l = 88, b = 59, r = 100)
+)
+# pcomb <- (p1 + theme(plot.margin = margin())) + free(p1_leg + theme(aspect.ratio = 1.9, plot.margin = margin())) + plot_layout(design = layout)
+pcomb <- (p1 + theme(plot.margin = margin())) + p1_leg + plot_layout(design = layout)
+
+
+ggsave(pcomb, file = here("plots", "epi_umap.pdf"), width = 6.75, height = 4.25)
+pcomb
+```
+
+
+### Marker plots
+
+#### Curated Markers
+
+```{r, fig.width = 9, fig.height = 4}
+epi_dotplot <- DotPlotter(srt_epi, features = markers$epi_markers_final, group.by = "cell_type_epi", cluster_groups = F, rotate_y_strip = T)
+ggsave(epi_dotplot, file = here("plots", "epi_marker_dotplot_unfilt.pdf"), width = 9, height = 4)
+epi_dotplot +
+  theme(axis.text.y = element_markdown())
+```
+
+#### HLCA marker set
+
+```{r, fig.width = 14, fig.height = 4.5}
+dp <- DotPlotter(srt_epi, features = markers$epi_markers_hlca, group.by = "cell_type_epi", cluster_groups = F)
+dp_f <- dp + theme(strip.text.x = element_text(angle = 90, hjust = 0), panel.spacing = unit(1, "mm")) +
+  guides(y.sec = guide_axis()) +
+  labs(title = "Human Lung Cell Atlas Epithelial Marker List") +
+  theme(plot.title = element_text(hjust = 0.5))
+ggsave(dp_f, file = here("plots", "hlca_marker_dotplot.pdf"), width = 14, height = 4.5)
+dp_f
+```
+
+
+#### Marker density plots
+
+```{r, fig.width = 6, fig.height = 4}
+glist <- c("SFTPB", "SFTPC", "SCGB3A2", "KRT13", "KRT6A", "DSG3")
+
+x <- Plot_Density_Custom(seurat_object = srt_epi, features = glist, viridis_palette = "inferno", joint = F, combine = F)
+
+names(x) <- glist
+
+res <- map(names(x), .f = function(gene) {
+  x[[gene]]$data %>%
+    mutate(!!gene := standardize(feature))
+})
+names(res) <- names(x)
+
+pls <- map(names(res), .f = function(gene) {
+  p <- res[[gene]] %>%
+    arrange(.data[[gene]]) %>%
+    ggplot(aes(x = Xumap_1, y = Xumap_2)) +
+    scattermore::geom_scattermore(aes(color = .data[[gene]]), pixels = c(256, 256)) +
+    scale_color_viridis_c(option = "inferno") +
+    labs(title = gene, color = "Density")
+})
+
+pcomb <- pls %>%
+  wrap_plots(nrow = 2, guides = "collect") &
+  guides(color = guide_colorbar(keywidth = 0.5, keyheight = 3)) &
+  umap_theme() &
+  NoAxes() &
+  theme(aspect.ratio = 1, plot.title = element_text(hjust = 0.5, face = "bold")) &
+  labs(color = "Expression\nDensity")
+ggsave(pcomb, filename = here("plots", "epi_exp_dens.pdf"), width = 6, height = 4)
+pcomb
+```
+
+
+#### SFTPB Expression
+
+```{r, fig.width = 2.5, fig.height = 3}
+df <- FetchData(srt_epi, vars = c("cell_type_epi", "SFTPB"))
+p <- df %>%
+  filter(grepl("^PDTC|^AT2", cell_type_epi)) %>%
+  ggplot(aes(x = fct_reorder(cell_type_epi, -SFTPB, median), y = SFTPB)) +
+  geom_violin(scale = "width", aes(fill = cell_type_epi)) +
+  guides(x = guide_axis(angle = 45)) +
+  geom_boxplot(width = 0.1, fill = "white", outliers = F) +
+  scale_fill_manual(values = colors$cell_type_epi) +
+  theme_classic(base_size = 16) +
+  NoLegend() +
+  labs(x = "Celltype", y = "Expression", title = "SFTPB") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+ggsave(p, file = here("plots", "sftpc_epi_expression.pdf"), width = 2.5, height = 3)
+p
+```
+
+
+### Relative cluster proportions
+
+```{r, fig.width = 6.25, fig.height = 7.5}
+p1 <- srt_epi@meta.data %>%
+  ggplot(aes(x = cell_type_epi)) +
+  geom_bar(aes(fill = sample_id), position = "fill") +
+  scale_fill_manual(values = colors$sample_id_new) +
+  labs(fill = "Patient", y = "Proportion") +
+  guides(fill = guide_legend(keywidth = 0.5, keyheight = 0.5, ncol = 6))
+
+p2 <- srt_epi@meta.data %>%
+  ggplot(aes(x = cell_type_epi)) +
+  geom_bar(aes(fill = site_of_tissue_simple), position = "fill") +
+  scale_fill_manual(values = colors$site_of_tissue_simple) +
+  labs(fill = "Tissue site", y = "Proportion") +
+  guides(fill = guide_legend(keywidth = 0.5, keyheight = 0.5, ncol = 2))
+
+p3 <- srt_epi@meta.data %>%
+  ggplot(aes(x = cell_type_epi)) +
+  geom_bar(aes(fill = time_point), position = "fill") +
+  scale_fill_manual(values = colors$time_point) +
+  guides(x = guide_axis(angle = 45)) +
+  labs(fill = "Timepoint", y = "Proportion") +
+  guides(fill = guide_legend(keywidth = 0.5, keyheight = 0.5))
+
+p4 <- srt_epi@meta.data %>%
+  add_count(cell_type_epi, cell_type, name = "n1") %>%
+  add_count(cell_type_epi, name = "n2") %>%
+  mutate(prop = n1 / n2) %>%
+  distinct(cell_type, cell_type_epi, prop) %>%
+  filter(cell_type == "Tumor Cell") %>%
+  ggplot(aes(x = cell_type_epi, y = prop)) +
+  geom_col(aes(fill = fct_rev(cell_type)), show.legend = F) +
+  geom_hline(yintercept = seq(0.25, 1, by = 0.25), alpha = 0.6, linetype = "dashed", color = "grey50", linewidth = 0.5) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, by = 0.25)) +
+  scale_fill_manual(values = colors$cell_type) +
+  labs(y = "Proportion\n(tumor cells)")
+
+p5 <- srt_epi@meta.data %>%
+  ggplot(aes(x = cell_type_epi)) +
+  geom_bar(aes(fill = Phase), position = "fill") +
+  scale_fill_manual(values = colors$Phase) +
+  guides(x = guide_axis(angle = 45)) +
+  labs(fill = "Cell Cycle Phase", y = "Proportion") +
+  guides(fill = guide_legend(keywidth = 0.5, keyheight = 0.5))
+
+gap_size <- 2
+
+pcomb <- wrap_plots(
+  p1 + theme(plot.margin = margin(t = 4, r = 2, b = gap_size, l = 2, "mm")),
+  free(p3 + theme(plot.margin = margin(t = gap_size, r = 2, b = gap_size, l = 2, "mm")), type = "space", side = "r"),
+  free(p2 + theme(plot.margin = margin(t = gap_size, r = 2, b = gap_size, l = 2, "mm")), type = "space", side = "r"),
+  free(p5 + theme(plot.margin = margin(t = gap_size, r = 2, b = gap_size, l = 2, "mm")), type = "space", side = "r"),
+  free(p4 + theme(plot.margin = margin(t = gap_size, r = 2, b = 2, l = 4, "mm")), type = "space", side = "l"),
+  ncol = 1, axes = "collect_x"
+) &
+  guides(
+    x = guide_axis(angle = 65, cap = "none"),
+    y = guide_axis(cap = "both")
+  ) &
+  scale_y_continuous(expand = c(0, 0)) &
+  labs(x = "Epithelial cell state") &
+  coord_cartesian(clip = "off")
+ggsave(pcomb, file = here("plots", "epi_type_feature_proportions.pdf"), width = 6.75, height = 7.5)
+pcomb
+```
+
+
+### Tumor Cell State Proportions
+
+This version is proportion of each pts tumor cells only
+
+```{r, fig.width = 5, fig.height = 3}
+use_col <- "cell_type_epi"
+
+df <- srt_epi@meta.data %>%
+  filter(cell_type == "Tumor Cell") %>%
+  add_count(.data[[use_col]], time_point, sample_id, name = "epi_type_n") %>%
+  add_count(sample_id, name = "sample_n") %>%
+  mutate(tum_prop = epi_type_n / sample_n) %>%
+  distinct(.data[[use_col]], epi_type_n, sample_n, tum_prop, sample_id, time_point)
+
+
+p_df <- df %>%
+  group_by(.data[[use_col]]) %>%
+  rstatix::wilcox_test(tum_prop ~ time_point) %>%
+  rstatix::adjust_pvalue(method = "BH") %>%
+  rstatix::add_significance(
+    symbols = symnum_0.1_star$symbols,
+    cutpoints = symnum_0.1_star$cutpoints
+  ) %>%
+  filter(p.adj < 0.1) %>%
+  rstatix::add_xy_position()
+
+pl <- df %>%
+  ggplot(aes(x = time_point, y = tum_prop)) +
+  geom_boxplot(outliers = F, size = 0.5, aes(fill = time_point), width = 0.9) +
+  geom_quasirandom(size = 0.75, alpha = 0.6, color = "black", aes(fill = time_point), stroke = 0.25, pch = 21, width = 0.3, show.legend = F) +
+  guides(x = guide_axis(angle = 45)) +
+  labs(y = "Tumor cell proportion", x = NULL) +
+  scale_color_manual(values = colors$time_point) +
+  scale_fill_manual(values = colors$time_point) +
+  facet_grid(. ~ .data[[use_col]], scales = "free", space = "free", switch = "x") +
+  ggprism::add_pvalue(p_df, tip.length = 0, label = "p.adj.signif", step.increase = -0.01, bracket.nudge.y = 0, bracket.size = 0.2, label.size = 2.5) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25), expand = expansion(mult = c(0.05, 0.1))) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.title.y = element_text(hjust = 0.2),
+    axis.ticks.x = element_blank(),
+    strip.text.x = element_markdown(angle = 90, hjust = 1, size = 8),
+    strip.background.x = element_part_rect(side = "t", linewidth = 0.5),
+    strip.placement = "inside",
+    panel.spacing = unit(1, "mm"),
+    strip.clip = "off",
+    legend.position = "inside",
+    legend.position.inside = c(0.8, 0.9),
+    legend.title.position = "top",
+    legend.title = element_text(hjust = 0.5),
+    legend.background = element_blank(),
+    axis.line.x = element_blank()
+  ) +
+  labs(fill = "Timepoint") +
+  guides(
+    x = guide_axis(cap = "none"),
+    y = guide_axis(cap = "upper"),
+    fill = guide_legend(nrow = 1, keywidth = 0.75, keyheight = 0.75)
+  ) +
+  coord_cartesian(clip = "off")
+ggsave(pl, file = here("plots", "epi_cluster_proportions.pdf"), width = 5, height = 3)
+pl
+```
+
+
+### Signature Heatmap
+
+```{r, fig.width = 8, fig.height = 9}
+emt_paths <- grep("emt|HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", ignore.case = T, colnames(srt_epi@meta.data), value = T)
+myc_paths <- c(grep("myc", ignore.case = T, colnames(srt_epi@meta.data), value = T))
+stemness <- c("WONG_EMBRYONIC_STEM_CELL_CORE", "BENPORATH_PRC2_TARGETS")
+metabolic_paths <- c("HALLMARK_GLYCOLYSIS", "HALLMARK_OXIDATIVE_PHOSPHORYLATION", "HALLMARK_MTORC1_SIGNALING")
+histological_malignant <- c("LUAD", "LUSC", "SCLC")
+histological <- c("TRAVAGLINI_LUNG_ALVEOLAR_EPITHELIAL_TYPE_1_CELL", "TRAVAGLINI_LUNG_ALVEOLAR_EPITHELIAL_TYPE_2_CELL", "alveolar_malignant", "TRAVAGLINI_LUNG_BASAL_CELL", "TRAVAGLINI_LUNG_CILIATED_CELL", "TRAVAGLINI_LUNG_CLUB_CELL", "TRAVAGLINI_LUNG_NEUROENDOCRINE_CELL", "TRAVAGLINI_LUNG_PROLIFERATING_BASAL_CELL", "TRAVAGLINI_LUNG_PROXIMAL_BASAL_CELL")
+cell_cycle <- c(grep("cycle", colnames(srt_epi@meta.data), ignore.case = T, value = T))
+mapk <- c("REACTOME_MAPK_FAMILY_SIGNALING_CASCADES", "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES", "BIOCARTA_MAPK_PATHWAY", "KEGG_MAPK_SIGNALING_PATHWAY", "REACTOME_SIGNALING_BY_EGFR")
+
+
+pth_list <- list(
+  "EMT" = emt_paths,
+  "MYC" = myc_paths,
+  "Stem" = stemness,
+  "Metabolic" = metabolic_paths,
+  "Lung Cancer" = histological_malignant,
+  "Histological" = histological,
+  "Cell Cycle" = cell_cycle,
+  "MAPK" = mapk
+)
+
+pth_df <- DotPlotter(srt_epi, features = pth_list, cluster_groups = F, cluster_feats = F, group.by = "cell_type_epi")$data
+```
+
+
+```{r, fig.width = 5, fig.height = 9}
+# Adjust names and filter
+pth_df <- pth_df %>%
+  filter(!grepl("_epithelial$", features.plot)) %>%
+  filter(!grepl("TGFB", features.plot)) %>%
+  mutate(pathway = case_when(
+    grepl("^TRAVAGLINI_LUNG_", features.plot) ~ str_to_title(gsub("_", " ", gsub("TRAVAGLINI_LUNG_", "", features.plot))),
+    features.plot == "alveolar_malignant" ~ "Alveolar Signature",
+    grepl("^HALLMARK", features.plot) ~ str_to_title(gsub("_", " ", gsub("HALLMARK_", "", features.plot))),
+    features.plot == "emt_i_malignant" ~ "EMT (I)",
+    features.plot == "emt_ii_malignant" ~ "EMT (II)",
+    features.plot == "emt_iii_malignant" ~ "EMT (III)",
+    features.plot == "emt_iv_malignant" ~ "EMT (IV)",
+    features.plot == "emt_i_malignant" ~ "EMT (I)",
+    features.plot == "emt_i_malignant" ~ "EMT (I)",
+    features.plot == "S.Score" ~ "S Score",
+    features.plot == "G2M.Score" ~ "G2M Score",
+    features.plot == "cell_cycle_g1_s_malignant" ~ "G1S",
+    features.plot == "cell_cycle_g2_m_malignant" ~ "G2M",
+    features.plot == "cell_cycle_hmg_rich_malignant" ~ "HMG Rich",
+    features.plot == "myc_malignant" ~ "MYC",
+    features.plot == "WONG_EMBRYONIC_STEM_CELL_CORE" ~ "Embryonic Stem Cell (Wong)",
+    features.plot == "BENPORATH_PRC2_TARGETS" ~ "PRC2 Targets (Ben-Porath)",
+    features.plot == "REACTOME_MAPK_FAMILY_SIGNALING_CASCADES" ~ "MAPK (Reactome)",
+    features.plot == "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES" ~ "Nuclear MAPK (Reactome)",
+    features.plot == "REACTOME_ONCOGENIC_MAPK_SIGNALING" ~ "Oncogenic MAPK (Reactome)",
+    features.plot == "BIOCARTA_MAPK_PATHWAY" ~ "MAPK (Biocarta)",
+    features.plot == "KEGG_MAPK_SIGNALING_PATHWAY" ~ "MAPK (KEGG)",
+    features.plot == "REACTOME_SIGNALING_BY_EGFR" ~ "EGFR (Reactome)",
+    .default = features.plot
+  )) %>%
+  # Fix additional
+  mutate(pathway = case_when(
+    pathway == "Mtorc1 Signaling" ~ "MTORC1",
+    pathway == "Epithelial Mesenchymal Transition" ~ "EMT",
+    pathway == "Alveolar Epithelial Type 2 Cell" ~ "AT2 Cell",
+    pathway == "Alveolar Epithelial Type 1 Cell" ~ "AT1 Cell",
+    pathway == "Oxidative Phosphorylation" ~ "OxPhos",
+    grepl("Myc", pathway) ~ gsub("Myc", "MYC", pathway),
+    .default = pathway
+  )) %>%
+  mutate(
+    pathway_source = case_when(
+      grepl("_malignant$", features.plot) ~ "Malignant Metaprograms",
+      grepl("_epithelial$", features.plot) ~ "Epithelial Metaprograms",
+      grepl("^TRAVAGLINI", features.plot) ~ "Travaglini",
+      grepl("^HALLMARK_", features.plot) ~ "Hallmark Pathways",
+      features.plot %in% c("S.Score", "G2M.Score") ~ "Seurat",
+      .default = "Curated"
+    )
+  ) %>%
+  # Remove extra myc pathways since they all show the same thing
+  filter(
+    !(grepl("MYC", features.plot, ignore.case = T) & pathway_source == "Curated")
+  ) %>%
+  arrange(desc(pathway_source), desc(pathway))
+
+# constructive::construct(unique(pth_df$pathway))
+pth_cat_order <- c(
+  "Histological", "Lung Cancer", "MAPK", "EMT", "MYC",
+  "Stem", "Metabolic", "Cell Cycle"
+)
+
+pth_order <- c(
+  "G1S", "G2M", "G2M Score", "HMG Rich", "S Score",
+  "EMT (I)", "EMT (II)", "EMT (III)", "EMT (IV)", "EMT",
+  "LUAD", "LUSC", "SCLC",
+  "AT1 Cell", "AT2 Cell", "Alveolar Signature", "Basal Cell", "Proximal Basal Cell",
+  "Proliferating Basal Cell", "Club Cell", "Ciliated Cell",
+  "Neuroendocrine Cell", "MYC", "MYC Targets V1", "MYC Targets V2",
+  "Glycolysis", "Oxidative Phosphorylation", "MTORC1", "Embryonic Stem Cell (Wong)",
+  "PRC2 Targets (Ben-Porath)",
+  "MAPK (KEGG)", "MAPK (Biocarta)", "MAPK (Reactome)", "Nuclear MAPK (Reactome)", "EGFR (Reactome)"
+)
+
+pth_df <- pth_df %>%
+  mutate(
+    pathway = fct_relevel(pathway, rev(pth_order)),
+    feature.groups = fct_relevel(feature.groups, pth_cat_order)
+  )
+
+p1 <- pth_df %>%
+  ggplot(aes(x = "Pathway Source", y = pathway)) +
+  geom_tile(aes(fill = pathway_source), color = "black") +
+  scale_fill_pander() +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  theme(
+    axis.line.x = element_blank(),
+    axis.line.y = element_blank(), legend.position = "left", strip.background = element_blank(), strip.text = element_blank()
+  ) +
+  guides(
+    x = guide_axis(angle = 90),
+    fill = guide_legend(keywidth = 0.5, keyheight = 0.5)
+  ) +
+  facet_grid(feature.groups ~ ., scales = "free", space = "free") +
+  labs(y = NULL, x = NULL, fill = "Pathway Source")
+
+
+p2 <- pth_df %>%
+  ggplot(aes(x = id, y = pathway)) +
+  geom_tile(aes(fill = avg.exp.scaled), color = "black") +
+  scale_fill_viridis_c(option = "inferno") +
+  facet_grid(feature.groups ~ ., scales = "free", space = "free") +
+  guides(
+    x = guide_axis(angle = 90),
+    x.sec = guide_axis(angle = 90),
+    fill = guide_colorbar(keywidth = 0.4, keyheight = 3)
+  ) +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  theme(
+    axis.line = element_blank(), panel.border = element_blank(),
+    strip.background.y = element_blank(),
+    strip.text.y.right = element_text(angle = 0, hjust = 0)
+  ) +
+  labs(y = NULL, x = NULL, fill = "Scaled\nExpression")
+
+sig_heatplot <- (p1 + theme(plot.margin = margin(l = 0.25, r = 1, unit = "mm"))) + (p2 + theme(plot.margin = margin(r = 0.25, unit = "mm"), axis.text.y = element_blank(), axis.ticks.y = element_blank())) + plot_layout(guides = "collect", ncol = 2, widths = c(0.03, 1)) + plot_annotation(theme = theme(legend.position = "bottom")) &
+  theme(panel.spacing = unit(1, "mm"), panel.border = element_rect(fill = NA, color = "black", linewidth = 0.5), legend.box.margin = margin()) &
+  coord_cartesian(clip = "off")
+ggsave(sig_heatplot, file = here("plots", "epi_types_signature_heatmap.pdf"), width = 5, height = 9)
+sig_heatplot
+```
+
+### Signature tumor boxplots
+
+Single table so I can plot select pathways of interest
+
+```{r, fig.width = 8, fig.height = 9}
+select_paths <- unique(sig_heatplot$data$features.plot)
+select_paths_name <- unique(sig_heatplot$data$pathway)
+
+all_sig_summary <- srt_epi@meta.data %>%
+  group_by(sample_id, time_point, is_tumor_cell) %>%
+  filter(is_tumor_cell) %>%
+  summarize(across(all_of(select_paths), ~ mean(.x, na.rm = T))) %>%
+  pivot_longer(cols = all_of(select_paths), names_to = "features.plot", values_to = "Score") %>%
+  group_by(features.plot) %>%
+  mutate(Score_Scaled = scale(Score)[, 1]) %>%
+  ungroup() %>%
+  mutate(pathway = case_when(
+    grepl("^TRAVAGLINI_LUNG_", features.plot) ~ str_to_title(gsub("_", " ", gsub("TRAVAGLINI_LUNG_", "", features.plot))),
+    features.plot == "alveolar_malignant" ~ "Alveolar Signature",
+    grepl("^HALLMARK", features.plot) ~ str_to_title(gsub("_", " ", gsub("HALLMARK_", "", features.plot))),
+    features.plot == "emt_i_malignant" ~ "EMT (I)",
+    features.plot == "emt_ii_malignant" ~ "EMT (II)",
+    features.plot == "emt_iii_malignant" ~ "EMT (III)",
+    features.plot == "emt_iv_malignant" ~ "EMT (IV)",
+    features.plot == "emt_i_malignant" ~ "EMT (I)",
+    features.plot == "emt_i_malignant" ~ "EMT (I)",
+    features.plot == "S.Score" ~ "S Score",
+    features.plot == "G2M.Score" ~ "G2M Score",
+    features.plot == "cell_cycle_g1_s_malignant" ~ "G1S",
+    features.plot == "cell_cycle_g2_m_malignant" ~ "G2M",
+    features.plot == "cell_cycle_hmg_rich_malignant" ~ "HMG Rich",
+    features.plot == "myc_malignant" ~ "MYC",
+    features.plot == "WONG_EMBRYONIC_STEM_CELL_CORE" ~ "Embryonic Stem Cell (Wong)",
+    features.plot == "BENPORATH_PRC2_TARGETS" ~ "PRC2 Targets (Ben-Porath)",
+    features.plot == "REACTOME_MAPK_FAMILY_SIGNALING_CASCADES" ~ "MAPK (Reactome)",
+    features.plot == "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES" ~ "Nuclear MAPK (Reactome)",
+    features.plot == "REACTOME_ONCOGENIC_MAPK_SIGNALING" ~ "Oncogenic MAPK (Reactome)",
+    features.plot == "BIOCARTA_MAPK_PATHWAY" ~ "MAPK (Biocarta)",
+    features.plot == "KEGG_MAPK_SIGNALING_PATHWAY" ~ "MAPK (KEGG)",
+    features.plot == "REACTOME_SIGNALING_BY_EGFR" ~ "EGFR (Reactome)",
+    .default = features.plot
+  )) %>%
+  # Fix additional
+  mutate(pathway = case_when(
+    pathway == "Mtorc1 Signaling" ~ "MTORC1",
+    pathway == "Epithelial Mesenchymal Transition" ~ "EMT",
+    pathway == "Alveolar Epithelial Type 2 Cell" ~ "AT2 Cell",
+    pathway == "Alveolar Epithelial Type 1 Cell" ~ "AT1 Cell",
+    pathway == "Oxidative Phosphorylation" ~ "OxPhos",
+    grepl("Myc", pathway) ~ gsub("Myc", "MYC", pathway),
+    .default = pathway
+  ))
+
+p <- all_sig_summary %>%
+  filter(pathway %in% select_paths_name) %>%
+  ggplot(aes(x = time_point, y = Score)) +
+  geom_boxplot(outliers = F, size = 0.5, aes(fill = time_point), width = 0.9) +
+  geom_quasirandom(size = 1, alpha = 0.6, color = "black", aes(fill = time_point), stroke = 0.25, pch = 21, width = 0.3) +
+  facet_wrap(~pathway, scales = "free", strip.position = "left", ncol = 6) +
+  scale_fill_manual(values = colors$time_point) +
+  coord_cartesian(clip = "off") +
+  theme(legend.position = "none", strip.background = element_blank(), strip.clip = "off", strip.placement = "outside") +
+  ggpubr::geom_pwc(tip.length = 0, method = "t_test", label.size = 2, label = "p.adj.signif", p.adjust.method = "BH") +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) +
+  labs(x = "Timepoint") +
+  guides(x = guide_axis(angle = 45))
+ggsave(p, file = here("plots", "epi_sig_tumor_specific_boxplots_select.pdf"), width = 8.5, height = 11)
+p
+```
+
+
+#### For Main
+
+```{r, fig.width = 8, fig.height = 2.5}
+select_paths_main <- c("Alveolar Signature", "LUAD", "Nuclear MAPK (Reactome)", "MYC", "Proliferating Basal Cell", "EMT")
+p <- all_sig_summary %>%
+  filter(pathway %in% select_paths_main) %>%
+  ggplot(aes(x = time_point, y = Score)) +
+  # geom_violin(aes(fill = time_point), scale = "width") +
+  geom_boxplot(outliers = F, size = 0.5, aes(fill = time_point), width = 0.9) +
+  geom_quasirandom(size = 1, alpha = 0.6, color = "black", aes(fill = time_point), stroke = 0.25, pch = 21, width = 0.3) +
+  facet_wrap(~ fct_relevel(pathway, select_paths_main), scales = "free", nrow = 1, strip.position = "left") +
+  scale_color_manual(values = colors$time_point) +
+  scale_fill_manual(values = colors$time_point) +
+  coord_cartesian(clip = "off") +
+  theme(legend.position = "none", strip.background = element_blank(), strip.text.y = element_text(size = 10), strip.clip = "off", strip.placement = "outside", panel.spacing = unit(0, "mm")) +
+  ggpubr::geom_pwc(tip.length = 0, method = "t_test", label.size = 2, label = "p.adj.signif", p.adjust.method = "BH", step.increase = 0.075) +
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.05))) +
+  labs(x = NULL, y = NULL) +
+  guides(x = guide_axis(angle = 45))
+ggsave(p, file = here("plots", "epi_tumor_boxplot_main.pdf"), width = 8, height = 2.6)
+p
+```
+
+
+
+## Figure 4 -- MAPKalt
+
+Subset for tumor cells
+
+```{r}
+srt_tum <- srt_epi[, srt_epi$is_tumor_cell]
+```
+
+
+### Pathway overlaps
+
+```{r}
+plist <- split(pathways$Gene, pathways$pathway)
+
+meta_programs_df <- read.table(file = "https://raw.githubusercontent.com/mjz1/meta_programs_tirosh/refs/heads/main/tirosh_mp_patched.txt", header = T, sep = "\t")
+
+meta_programs <- split(meta_programs_df, meta_programs_df$cell_type)
+
+meta_programs <- map(meta_programs, .f = function(x) {
+  res <- split(x, x$meta_program)
+  map(res, .f = function(y) y$Gene)
+})
+
+names(meta_programs) <- janitor::make_clean_names(names(meta_programs))
+
+
+plist_sel <- list(
+  "Alveolar" = meta_programs$malignant$alveolar,
+  "LUAD" = plist$LUAD_GIRARD,
+  "LUSC" = plist$LUSC_GIRARD,
+  "SCLC" = plist$SCLC_CCLE,
+  "Nuclear MAPK (Reactome)" = plist$REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES,
+  "MAPK (KEGG)" = plist$KEGG_MAPK_SIGNALING_PATHWAY,
+  "MAPK (Biocarta)" = plist$BIOCARTA_MAPK_PATHWAY
+)
+
+plist_sel <- map(plist_sel, unique)
+
+fit <- euler(plist_sel)
+pdf(here("plots", "mapk_path_overlaps_extended.pdf"), width = 7, height = 7)
+plot(fit, quantities = TRUE, legend = F)
+dev.off()
+plot(fit, quantities = TRUE, legend = F)
+
+```
+
+
+### MAPK correlations
+
+#### Psuedobulked
+
+```{r, fig.width = 9, fig.height = 3}
+paths <- c("Nuclear MAPK (Reactome)", "MAPK (Biocarta)", "MAPK (KEGG)")
+all_sig_summary_wide <- all_sig_summary %>%
+  pivot_wider(id_cols = c("sample_id", "time_point"), names_from = pathway, values_from = Score)
+
+
+
+pls <- map(paths, .f = function(pth) {
+  p <- all_sig_summary_wide %>%
+    ggplot(aes(x = .data[[pth]], y = LUAD)) +
+    stat_ellipse(
+      data = all_sig_summary_wide[all_sig_summary_wide$time_point != "MRD", ],
+      aes(fill = time_point),
+      type = "t",
+      geom = "polygon",
+      alpha = 0.3, show.legend = F
+    ) +
+    geom_point(aes(fill = time_point), pch = 21, stroke = 0.5, size = 2.5) +
+    geom_line(stat = "smooth", method = "lm", color = "#063970", se = F, linewidth = 1.25, alpha = 0.75) +
+    ggpubr::stat_cor() +
+    scale_fill_manual(values = colors$time_point, breaks = names(colors$time_point)) +
+    theme_classic() +
+    labs(y = "LUAD Signature", fill = "Timepoint", x = pth) +
+    guides(fill = guide_legend(override.aes = list(size = 3.5)))
+})
+
+pcomb <- wrap_plots(pls, nrow = 1, guides = "collect", axes = "collect") & theme(panel.border = element_rect(fill = NA, color = "black"), axis.line = element_blank())
+ggsave(pcomb, file = here("plots", "luad_mapk_select_cors.pdf"), width = 8, height = 2.75)
+pcomb
+```
+
+
+#### Within sample correlations
+
+```{r}
+library(easystats)
+x <- srt_epi@meta.data %>%
+  filter(is_tumor_cell) %>%
+  mutate(sample_id = factor(sample_id)) %>%
+  add_count(sample_id, name = "n_cells") %>%
+  dplyr::group_by(sample_id) %>%
+  correlation::correlation(select = c("LUAD", "LUSC", "SCLC"), select2 = c("BIOCARTA_MAPK_PATHWAY", "KEGG_MAPK_SIGNALING_PATHWAY", "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES"), method = "spearman") %>%
+  left_join(distinct(srt_epi@meta.data[, c("sample_id", "time_point")]), by = c("Group" = "sample_id")) %>%
+  mutate(
+    mapk_path = case_when(
+      Parameter2 == "BIOCARTA_MAPK_PATHWAY" ~ "MAPK (Biocarta)",
+      Parameter2 == "KEGG_MAPK_SIGNALING_PATHWAY" ~ "MAPK (KEGG)",
+      Parameter2 == "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES" ~ "Nuclear MAPK (Reactome)",
+      .default = Parameter2
+    )
+  )
+```
+
+
+Plot for main
+
+```{r, fig.width = 6, fig.height = 3.5}
+p <- x %>%
+  filter(Parameter2 == "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES") %>%
+  arrange(desc(p)) %>%
+  ggplot(aes(x = Parameter1, y = rho)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  gghalves::geom_half_boxplot(outliers = F, aes(fill = Parameter1), errorbar.draw = T) +
+  gghalves::geom_half_point_panel(aes(size = -log10(p), fill = Parameter1, alpha = n_Obs), pch = 21) +
+  facet_nested("Within sample correlations" ~ mapk_path + time_point) +
+  scale_fill_manual(values = colors$histology_predominant_short) +
+  scale_alpha_continuous(trans = "log10", breaks = scales::breaks_log(), labels = scales::label_number(big.mark = ",")) +
+  guides(
+    fill = "none",
+    x = guide_axis(angle = 0),
+    size = guide_legend(override.aes = list(pch = 19)),
+    alpha = guide_legend(override.aes = list(pch = 16, size = 3))
+  ) +
+  ggpubr::geom_pwc(tip.length = 0, label = "p.adj.signif", step.increase = 0.05, vjust = 0.5, hide.ns = T, bracket.nudge.y = 0.075) +
+  theme_few() +
+  theme(
+    strip.clip = "off",
+    plot.title = element_text(hjust = 0.5, size = 12), plot.title.position = "panel",
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(size = 8)
+  ) +
+  labs(x = "Lineage Signature", y = bquote("Spearman's" ~ rho), size = bquote("-log10"[Padj]), alpha = "No. cells")
+ggsave(p, file = here("plots", "per_sample_mapk_cor_main.pdf"), width = 6, height = 3.5)
+p
+```
+
+
+Plot for supp
+
+```{r, fig.width = 11, fig.height = 3.5}
+p <- x %>%
+  filter(Parameter2 != "REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES") %>%
+  arrange(desc(p)) %>%
+  ggplot(aes(x = Parameter1, y = rho)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  gghalves::geom_half_boxplot(outliers = F, aes(fill = Parameter1), errorbar.draw = T) +
+  gghalves::geom_half_point_panel(aes(size = -log10(p), fill = Parameter1, alpha = n_Obs), pch = 21) +
+  facet_nested("Within sample correlations" ~ mapk_path + time_point) +
+  scale_fill_manual(values = colors$histology_predominant_short) +
+  scale_alpha_continuous(trans = "log10", breaks = scales::breaks_log(), labels = scales::label_number(big.mark = ",")) +
+  guides(
+    fill = "none",
+    x = guide_axis(angle = 0),
+    size = guide_legend(override.aes = list(pch = 19)),
+    alpha = guide_legend(override.aes = list(pch = 16, size = 3))
+  ) +
+  ggpubr::geom_pwc(tip.length = 0, label = "p.adj.signif", step.increase = 0.05, vjust = 0.5, hide.ns = T, bracket.nudge.y = 0.075) +
+  theme_few() +
+  theme(
+    strip.background.x = element_part_rect(side = "b", fill = NA, color = "black"),
+    strip.clip = "off",
+    plot.title = element_text(hjust = 0.5, size = 12), plot.title.position = "panel",
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(size = 8)
+  ) +
+  labs(x = "Lineage Signature", y = bquote("Spearman's" ~ rho), size = bquote("-log10"[Padj]), alpha = "No. cells")
+ggsave(p, file = here("plots", "per_sample_mapk_cor_supp.pdf"), width = 11, height = 3.5)
+p
+```
+
+
+### MAPK Genomic Alterations
+
+```{r}
+df_ord <- srt_tum@meta.data %>%
+  group_by(sample_id) %>%
+  summarize(mean_LUAD = mean(LUAD),
+            median_LUAD = median(LUAD)) %>%
+  filter(grepl("PD", sample_id)) %>%
+  arrange(median_LUAD, mean_LUAD)
+
+samp_ord <- df_ord %>%
+  pull(sample_id) %>%
+  as.character() %>%
+  rev()
+
+
+secondary_mapk_class <- distinct(db$metadata, sample_id, mapk_alt)
+
+srt_tum <- update_metadata(srt_tum, secondary_mapk_class, match_by = "sample_id")
+
+p1 <- srt_tum@meta.data %>%
+  filter(time_point == "PD") %>%
+  ggplot(aes(x = fct_relevel(sample_id, samp_ord), y = LUAD)) +
+  # ggplot(aes(x = sample_id_new, y = LUAD)) +
+
+  geom_violin(scale = "width", aes(fill = time_point), show.legend = F) +
+  geom_pointrange(
+    stat = "summary", fatten = 0.1,
+    fun.min = function(z) {
+      quantile(z, 0.25)
+    },
+    fun.max = function(z) {
+      quantile(z, 0.75)
+    },
+    fun = median, position = position_dodge(width = 0.8)
+  ) +
+  facet_grid(. ~ mapk_alt, scales = "free", space = "free") +
+  guides(x = guide_axis(angle = 90)) +
+  labs(x = "Sample", y = "LUAD score") +
+  scale_fill_manual(values = colors$time_point) +
+  theme_few() +
+  theme(
+    axis.line = element_blank(),
+    panel.border = element_rect(fill = NA, color = "black"),
+    strip.background.x = element_blank()
+  )
+
+p2 <- srt_tum@meta.data %>%
+  filter(time_point == "PD") %>%
+  group_by(sample_id, mapk_alt, time_point) %>%
+  summarize(LUAD = mean(LUAD)) %>%
+  ggplot(aes(x = mapk_alt, y = LUAD)) +
+  geom_boxplot(outliers = F, aes(fill = time_point), show.legend = F) +
+  geom_quasirandom(size = 0.3, pch = 1) +
+  ggpubr::geom_pwc(tip.length = 0, label = "p.signif") +
+  guides(x = guide_axis(angle = 45)) +
+  scale_fill_manual(values = colors$time_point) +
+  labs(x = NULL, y = "LUAD score\n(per sample means)") +
+  coord_cartesian(clip = "off") +
+  theme_classic()
+
+pcomb <- p1 + p2 + plot_layout(nrow = 1, widths = c(1, 0.1), guides = "collect") & theme(axis.text.x = element_text(size = 6))
+ggsave(pcomb, file = here("plots", "mapk_alt_luad_sig_relapsed.pdf"), width = 5, height = 2.5)
+pcomb
+```
+
+
+Create a plot with the mutations annotated in a bar on the side, and notable genes expression in a box heat encoding
+
+```{r, fig.width = 6, fig.height = 4.25}
+mapk_alt_df <- db$metadata[,c("sample_id", "secondary_mapk", "mapk_alt")] %>%
+  filter(sample_id %in% unique(srt_tum$sample_id)) %>%
+  separate_rows(secondary_mapk, sep = ", ") %>%
+  separate(secondary_mapk, sep = "_", into = c("Gene", "Variant_Type"), remove = F) %>%
+  mutate(
+    infercnv = grepl("inf", Variant_Type),
+    Variant_Type = gsub("inf", "", Variant_Type),
+    Gene = case_when(
+      grepl("NA", Gene) ~ NA,
+      .default = Gene
+    )
+  ) %>%
+  tidyr::complete(nesting(sample_id, mapk_alt), Gene, fill = list(Variant_Type = "NoAlt")) %>%
+  mutate(Variant_Type = fct_recode(Variant_Type,
+    "Amp" = "amp",
+    "Fusion" = "fus"
+  )) %>%
+  filter(!grepl("MRD|TN", sample_id),
+         !is.na(Gene))
+
+
+
+var_order <- names(table(mapk_alt_df$Variant_Type) %>% sort(decreasing = T))
+var_order <- c(var_order[-1], "NoAlt")
+
+gene_ord <- mapk_alt_df[!is.na(mapk_alt_df$Gene) & mapk_alt_df$Variant_Type != "NoAlt", ]$Gene %>%
+  table() %>%
+  sort(decreasing = T)
+
+p3 <- mapk_alt_df %>%
+  filter(!is.na(Gene)) %>%
+  ggplot(aes(y = fct_relevel(Gene, rev(names(gene_ord))), x = fct_relevel(sample_id, samp_ord))) +
+  geom_tile(aes(fill = fct_relevel(Variant_Type, var_order))) +
+  geom_point(
+    data = mapk_alt_df[mapk_alt_df$infercnv & !is.na(mapk_alt_df$infercnv), ],
+    aes(color = "inferCNV"), show.legend = F
+  ) +
+  guides(
+    x = guide_axis(angle = 90),
+    fill = guide_legend(order = 1, keywidth = 0.4, keyheight = 0.4, ncol = 2, theme = theme(legend.margin = margin()))
+  ) +
+  scale_fill_manual(
+    values = c(
+      "NoAlt" = "white",
+      "Amp" = "#4477AA",
+      "Fusion" = "#88CCEE",
+      "C797S" = "#117733",
+      "Q1235*" = "#DDCC77",
+      "Q535*" = "#332288",
+      "W175*" = "#999933"
+    ),
+    breaks = var_order[-length(var_order)]
+  ) +
+  scale_y_discrete(expand = c(0, 0)) +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_color_manual(values = "black") +
+  # scale_x_discrete(drop = FALSE) +
+  facet_grid(. ~ mapk_alt, scales = "free", space = "free") +
+  labs(x = "Sample", y = "Gene", fill = "Variant", color = NULL)
+p1 <- p1 + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title.x = element_blank())
+
+p3 <- p3 + theme_few() + theme(strip.text.x = element_blank(), strip.background.x = element_blank(), legend.background = element_blank(), plot.background = element_blank(), panel.grid = element_line(color = "grey50", linetype = "solid", linewidth = 1, colour = "black"))
+
+pcomb <- (p1) + free(p2, type = "space", side = "b") + free(p3, type = "space") + plot_spacer() + plot_layout(ncol = 2, widths = c(1, 0.1)) +
+  plot_annotation(theme = theme(plot.margin = margin(3, 8, 15, 12, unit = "mm")))
+ggsave(pcomb, file = here("plots", "mapk_alt_luad_sig_relapsed_plus_muts_v2.pdf"), width = 6, height = 4.25)
+
+pcomb
+```
+
+
+Psuedobulk exp heatmap
+
+```{r, fig.width = 6, fig.height = 3}
+feats <- c("EGFR", "MET", "ALK", "BRAF", "ERBB2", "FGFR1", "KIT", "KRAS")
+mapk_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id", meta_cols = c("time_point", "mapk_alt"), features = feats)
+
+devtools::load_all()
+mapk_exp_df <- mapk_exp_df %>%
+  filter(time_point == "PD") %>%
+  mutate(across(all_of(feats), ~ standardize(.x)))
+
+
+mapk_exp_df_long <- mapk_exp_df %>%
+  pivot_longer(cols = feats, names_to = "Gene", values_to = "exp")
+
+p_df <- mapk_exp_df_long %>%
+  group_by(Gene) %>%
+  rstatix::wilcox_test(exp ~ mapk_alt, detailed = T) %>%
+  rstatix::adjust_pvalue(method = "BH") %>%
+  rstatix::add_significance(
+    p.col = "p", cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1),
+    symbols = c("***", "**", "*", "^", "")
+  )
+
+p4 <- mapk_exp_df_long %>%
+  ggplot(aes(x = fct_relevel(sample_id, samp_ord), y = as.numeric(fct_relevel(Gene, rev(names(gene_ord)))))) +
+  geom_tile(aes(fill = exp), color = "grey10") +
+  scale_fill_viridis_c(option = "rocket") +
+  guides(
+    x = guide_axis(angle = 90),
+    fill = guide_colorbar(keywidth = 0.4, keyheight = 3)
+  ) +
+  scale_y_continuous(
+    expand = c(0, 0), breaks = 1:n_distinct(mapk_exp_df_long$Gene),
+    labels = rev(unique(mapk_exp_df_long$Gene)),
+    sec.axis = sec_axis(~.,
+      breaks = 1:n_distinct(mapk_exp_df_long$Gene),
+      labels = rev(p_df$p.signif[match(feats, p_df$Gene)])
+    )
+  ) +
+  scale_x_discrete(expand = c(0, 0)) +
+  theme_few() +
+  theme(
+    strip.text.x = element_blank(), strip.background.x = element_blank(), panel.border = element_blank(),
+    axis.ticks.y.right = element_blank(), axis.text.y.right = element_text(vjust = 0.8, hjust = 0)
+  ) +
+  facet_grid(. ~ mapk_alt, scales = "free", space = "free") +
+  labs(x = "Sample", y = "Gene", fill = "Normalized\nExpression")
+p4
+```
+
+#### Merged plot
+
+```{r, fig.width = 6, fig.height = 5.5}
+pcomb <- (p1 + theme(plot.margin = margin())) + free(p2, type = "space", side = "b") + free((p3 + theme(plot.margin = margin(), axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.title.x = element_blank())), type = "space") + plot_spacer() + free(p4, type = "space") + plot_spacer() + plot_layout(ncol = 2, widths = c(1, 0.1), heights = c(1, 1, 0.6)) +
+  plot_annotation(theme = theme(plot.margin = margin(3, 8, 15, 12, unit = "mm")))
+ggsave(pcomb, file = here("plots", "mapk_alt_luad_sig_relapsed_plusmuts_plusexp.pdf"), width = 6, height = 5.5)
+
+pcomb
+```
+
+#### Model lineage associations
+
+Do a model with MAPKalt vs not for the three histologies, then a model for each mutation's association with LUSC and SCLC
+
+```{r}
+dat <- srt_tum@meta.data %>%
+  filter(time_point == "PD") %>%
+  group_by(sample_id, mapk_alt, time_point) %>%
+  summarize(across(c(LUAD, LUSC, SCLC), mean)) %>%
+  ungroup() %>%
+  mutate(mapk_alt = fct_relevel(mapk_alt, "Unknown"))
+
+mods <- map(c("LUAD", "LUSC", "SCLC"), .f = function(pth) {
+  mod <- lm(glue::glue("{pth} ~ mapk_alt"), dat) %>%
+    broom::tidy(conf.int = TRUE) %>%
+    mutate(Signature = pth, .before = 1) %>%
+    filter(term == "mapk_altMAPKalt")
+}) %>%
+  list_rbind()
+
+mods <- mods %>%
+  rstatix::add_significance(
+    p.col = "p.value",
+    cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 0.1, 1),
+    symbols = c("p<0.0001", "p<0.001", "p<0.01", "p<0.05", "p<0.1", "ns")
+  )
+```
+
+
+```{r, fig.width = 2, fig.height = 1.5}
+p <- mods %>%
+  ggplot(., aes(x = estimate, y = fct_reorder(Signature, estimate, mean))) +
+  geom_pointrange(aes(x = estimate, xmin = conf.low, xmax = conf.high), fatten = 0.4) +
+  geom_vline(xintercept = 0, linetype = "11") +
+  theme_few() +
+  theme(
+    axis.line = element_blank(),
+    panel.border = element_rect(fill = NA, color = "black"),
+    strip.background = element_blank(),
+    plot.title = element_text(size = 10, hjust = 0.5),
+    axis.title = element_text(size = 8)
+  ) +
+  labs(y = "Gene Signature", x = "Coefficient", title = "Secondary MAPK (PD)") +
+  geom_text(data = {
+    filter(mods, p.value != "ns")
+  }, aes(y = Signature, x = estimate, label = p.value.signif), nudge_y = 0.325, size = 2.25)
+ggsave(p, file = here("plots", "acquired_mapk_lm.pdf"), width = 2, height = 1.5)
+p
+```
+
+### Lineage Signature Heatmap
+
+```{r}
+feats <- c("LUAD", "LUSC", "SCLC")
+sig_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id", meta_cols = c("time_point", "mapk_alt", "histology_predominant_short"), features = feats)
+
+sig_exp_df <- sig_exp_df %>%
+  mutate(across(all_of(feats), ~ scale(.x)))
+
+
+df_ord <- srt_tum@meta.data %>%
+  group_by(sample_id) %>%
+  summarize(mean_LUAD = mean(LUAD),
+            median_LUAD = median(LUAD)) %>%
+  arrange(median_LUAD, mean_LUAD)
+
+samp_ord2 <- df_ord %>%
+  pull(sample_id) %>%
+  as.character() %>%
+  rev()
+
+sig_exp_df_long <- sig_exp_df %>%
+  pivot_longer(cols = feats, names_to = "Gene", values_to = "exp")
+
+p0 <- sig_exp_df %>%
+  ggplot(aes(x = fct_relevel(sample_id, samp_ord2))) +
+  geom_tile(aes(y = "MAPKalt", fill = mapk_alt), show.legend = F, color = "black") +
+  scale_fill_manual(
+    values = c("MAPKalt" = "black", "Unknown" = "white"), breaks = c("MAPKalt"),
+    labels = c("Secondary MAPK"), na.value = "white"
+  ) +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  theme_few() +
+  labs(y = NULL, x = NULL, fill = NULL) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+p1 <- sig_exp_df_long %>%
+  ggplot(aes(x = fct_relevel(sample_id, samp_ord2), y = fct_relevel(Gene, "SCLC", "LUSC", "LUAD"))) +
+  geom_tile(aes(fill = exp), color = "black") +
+  # scale_fill_viridis_c(option = "rocket", oob = scales::squish, limits = c(-2, 2)) +
+  scale_fill_gradient2(low = scales::muted("blue"), mid = "white", high = scales::muted("red"), oob = scales::squish, limits = c(-2, 2)) +
+  facet_grid(. ~ time_point, scales = "free", space = "free") +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  labs(fill = "Normalized\nExpression", x = "Sample", y = "Lineage\nSignature") +
+  guides(
+    x = guide_axis(angle = 90),
+    fill = guide_colorbar(keywidth = 0.4, keyheight = 3)
+  ) +
+  theme_few() +
+  theme(strip.text.x = element_blank())
+```
+
+
+```{r, fig.width = 4.5, fig.height = 10}
+p0 <- sig_exp_df %>%
+  mutate(mapk_alt = ifelse(time_point %in% c("TN", "MRD"), "NA", mapk_alt)) %>%
+  ggplot(aes(x = fct_relevel(sample_id, rev(samp_ord2)))) +
+  geom_tile(aes(y = "MAPKalt", fill = mapk_alt), show.legend = T, color = "black") +
+  # geom_point(data = sig_exp_df[sig_exp_df$time_point != "PD", ], aes(y = "MAPKalt"), pch = 4, size = 5) +
+  # geom_tile_pattern(aes(y = "MAPKalt", fill = "white", pattern = "stripe", color = "black"), show.legend = F) +
+  scale_fill_manual(
+    name = "Secondary MAPK\nAlteration",
+    values = c("MAPKalt" = "black", "Unknown" = "white", "NA" = "grey60"), breaks = c("MAPKalt", "Unknown", "NA"),
+    labels = c("Detected", "Undetected", "Not applicable")
+  ) +
+  guides(fill = guide_legend(keywidth = 0.4, keyheight = 0.5, order = 1)) +
+  ggnewscale::new_scale_fill() +
+  geom_tile(aes(y = "Clinical Histology", fill = histology_predominant_short), color = "black") +
+  scale_fill_manual(
+    name = "Clinical Histology", values = colors$histology_predominant_short,
+    breaks = names(colors$histology_predominant_short)
+  ) +
+  guides(fill = guide_legend(keywidth = 0.4, keyheight = 0.5, order = 2)) +
+  facet_grid(time_point ~ ., scales = "free", space = "free") +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0), limits = c("MAPKalt", "Clinical Histology")) +
+  guides(x = guide_axis(angle = 90)) +
+  theme_few() +
+  labs(y = NULL, x = NULL, fill = NULL) +
+  theme(
+    axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+    strip.text.y.right = element_text(angle = 0, hjust = 0)
+  ) +
+  coord_flip()
+
+p1 <- sig_exp_df_long %>%
+  ggplot(aes(x = fct_relevel(sample_id, rev(samp_ord2)), y = fct_relevel(Gene, "LUAD", "LUSC", "SCLC"))) +
+  geom_tile(aes(fill = exp), color = "black") +
+  # scale_fill_viridis_c(option = "rocket", oob = scales::squish, limits = c(-2, 2)) +
+  scale_fill_gradient2(low = scales::muted("blue"), mid = "white", high = scales::muted("red"), oob = scales::squish, limits = c(-2, 2)) +
+  facet_grid(time_point ~ ., scales = "free", space = "free") +
+  scale_x_discrete(expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0)) +
+  labs(fill = "Normalized\nExpression", x = "Samples ranked by LUAD signature", y = "Lineage\nSignature") +
+  guides(
+    x = guide_axis(angle = 90),
+    fill = guide_colorbar(keywidth = 0.4, keyheight = 3)
+  ) +
+  theme_few() +
+  theme(strip.text.y = element_blank()) +
+  coord_flip()
+
+
+pcomb <- free((p1 + theme(plot.margin = margin(4, 0, 0, 30, "mm"))), type = "label", side = "b") + (p0 + theme(plot.margin = margin(4, 30, 0, 0, "mm"))) + plot_layout(ncol = 2, widths = c(1, 0.66), guides = "collect") + plot_annotation(theme = theme(legend.position = "bottom", legend.box.margin = margin(), legend.margin = margin()))
+ggsave(pcomb, file = here("plots", "sig_heatmap.pdf"), width = 4.5, height = 10)
+
+pcomb
+```
+
+
+### Ternary diagram
+
+```{r, fig.width = 5.4, fig.height = 3.4}
+sig_exp_df <- bulk_exp(srt_tum, cell_type_col = "is_tumor_cell", sample_id_col = "sample_id", meta_cols = c("time_point", "mapk_alt"), features = c("LUAD", "LUSC", "SCLC"))
+
+devtools::load_all()
+sig_exp_df <- sig_exp_df %>%
+  mutate(across(all_of(c("LUAD", "LUSC", "SCLC")), ~ standardize(.x)))
+
+sig_exp_df$mapk_alt[is.na(sig_exp_df$mapk_alt)] <- "Unknown"
+
+library(ggtern)
+
+p1 <- sig_exp_df %>%
+  mutate(acquired_mapk = ifelse(mapk_alt == "MAPKalt", "MAPKalt", "Unknown")) %>%
+  ggtern(aes(y = LUAD, x = LUSC, z = SCLC)) +
+  geom_mask() +
+  geom_point(aes(fill = time_point, shape = acquired_mapk), size = 3, show.legend = T) +
+  scale_fill_manual(values = colors$time_point) +
+  scale_shape_manual(values = c(21, 24)) +
+  theme_classic() +
+  Tlab("LUAD") + Llab("LUSC") + Rlab("SCLC") +
+  theme_nolabels() +
+  # theme_nomask() +
+  guides(
+    fill = guide_legend(override.aes = list(shape = 21)),
+    shape = guide_legend(override.aes = list(fill = "black"))
+  ) +
+  labs(fill = "Timepoint", shape = "Acquired MAPK") +
+  theme_noticks() +
+  theme(panel.background = element_blank(), panel.border = element_blank()) +
+  # facet_grid(.~time_point, switch = "x") +
+  theme(
+    # axis.title = element_markdown(color = "blue"), # This is where to do it
+    strip.background = element_part_rect(side = ""),
+    legend.position = "right",
+    strip.text.x.bottom = element_text(size = 12, face = "bold")
+  )
+ggsave(p1, file = here("plots", "sample_ternary_mapk.pdf"), width = 5.4, height = 3.4)
+p1
+```

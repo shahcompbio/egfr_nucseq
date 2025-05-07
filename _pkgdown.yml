@@ -1,0 +1,29 @@
+url: https://shahcompbio.github.io/egfr_nucseq/
+template:
+  bootstrap: 5
+  bootswatch: minty
+  light-switch: yes
+navbar:
+  structure:
+    left:
+    - intro
+    - vignettes
+    right:
+    - github
+    - lightswitch
+  components:
+    vignettes:
+      text: Vignettes
+      menu:
+      - text: Main Plotting Code
+        href: articles/99_plots.html
+      - text: Histotime Analysis
+        href: articles/23_histotime.html
+      - text: IMPACT Analysis
+        href: articles/31_impact_analysis.html
+      - text: LuCA Atlas Analysis
+        href: articles/41_luca_analysis.html
+      - text: TCGA/CPTAC Aanalysis
+        href: articles/42_tcga_cptac_analysis.html
+
+

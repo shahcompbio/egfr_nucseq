@@ -1,0 +1,107 @@
+---
+title: "LuCA Atlas Analysis"
+author: "Matthew Zatzman"
+date: "`r Sys.Date()`"
+execute: 
+  warning: false
+  error: false
+format: 
+  html:
+    embed-resources: true
+    code-tools: true
+    toc: true
+---
+
+
+```{r setup}
+#| output: false
+library(tidyverse)
+library(here)
+library(ggthemes)
+library(ggh4x)
+library(glue)
+library(Seurat)
+devtools::load_all()
+
+markers <- load_markers()
+```
+
+# Load Data
+
+```{r}
+luca <- readRDS(here("paper_data", "luca_extended.rds"))
+
+luca <- luca[, luca$ann_coarse == "Epithelial cell"]
+
+scores <- read.table(file = here("paper_data", "luca_ucell_signatures.txt.gz"), header = T, sep = "\t")
+rownames(scores) <- scores$cell_id
+scores$cell_id <- NULL
+luca <- AddMetaData(luca, scores)
+```
+
+# Check Markers
+
+```{r, fig.width = 9, fig.height = 4}
+#| warning: false
+p <- DotPlotter(luca, features = markers$epi_markers_final, group.by = "ann_fine", rotate_y_strip = T)
+p
+```
+
+# Compute mean scores and plot
+
+```{r}
+sample_df <- luca@meta.data %>%
+  add_count(sample, name = "n_epi") %>%
+  add_count(sample, ann_fine, name = "n_fine") %>%
+  mutate(prop_fine = n_epi / n_fine) %>%
+  select(study, dataset, donor_id, sample, origin, platform, n_epi, ends_with("_mutation")) %>%
+  distinct()
+
+mean_scores <- luca@meta.data %>%
+  group_by(sample) %>%
+  add_count(name = "n_samp") %>%
+  filter(n_samp >= 100) %>%
+  group_by(study, disease, dataset, donor_id, sample, origin, platform, ann_fine, tumor_stage, uicc_stage) %>%
+  add_count(name = "n_fine") %>%
+  filter(n_fine >= 20) %>%
+  summarize(across(colnames(scores), ~ mean(.x, na.rm = T))) %>%
+  ungroup() %>%
+  left_join(select(sample_df, sample, ends_with("_mutation")))
+
+mean_scores_long <- mean_scores %>%
+  pivot_longer(cols = colnames(scores), names_to = "Pathway", values_to = "mean_exp")
+```
+
+```{r, fig.width = 8, fig.height = 3}
+df <- mean_scores %>%
+  filter(ann_fine == "Cancer cells" & disease %in% c("lung adenocarcinoma"))
+
+p1 <- df %>%
+  ggplot(aes(x = REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES, y = LUAD_GIRARD, color = tumor_stage)) +
+  geom_point() +
+  geom_smooth(method = "lm", show.legend = F, se = F) +
+  ggpubr::stat_cor(show.legend = F, size = 2.75, label.x.npc = 0.45, label.y.npc = 0.075) +
+  facet_grid(. ~ glue("Single Cell LuCA Atlas\nLUAD samples ({nrow(df)})")) +
+  see::scale_color_bluebrown_d(reverse = T, breaks = c("early", "advanced"), labels = c("Early", "Advanced")) +
+  theme_few() +
+  labs(x = "Reactome Nuclear MAPK", y = "LUAD Signature", color = "Tumor Stage")
+
+
+df2 <- mean_scores %>%
+  filter(ann_fine %in% c("Alveolar cell type 1", "Alveolar cell type 2") & origin %in% c("normal"))
+
+p2 <- df2 %>%
+  ggplot(aes(x = REACTOME_MAPK_TARGETS_NUCLEAR_EVENTS_MEDIATED_BY_MAP_KINASES, y = LUAD_GIRARD, color = ann_fine)) +
+  geom_point() +
+  geom_smooth(method = "lm", show.legend = F, se = F) +
+  ggpubr::stat_cor(show.legend = F, size = 2.75, label.x.npc = 0.4, label.y.npc = 0.9) +
+  facet_grid(. ~ glue("Single Cell LuCA Atlas\nNormal samples ({nrow(df2)})")) +
+  scale_color_manual(values = c("#E64B35FF", "#4DBBD5FF"), breaks = c("Alveolar cell type 1", "Alveolar cell type 2"), labels = c("AT1", "AT2")) +
+  theme_few() +
+  labs(x = "Reactome Nuclear MAPK", y = "LUAD Signature", color = "Cell Type")
+
+pcomb <- p1 | p2
+ggsave(pcomb, file = here("plots", "luca_atlas_mapk_cor_plus_norm.pdf"), width = 8, height = 3)
+pcomb
+```
+
