@@ -1,8 +1,10 @@
 # Complementary modes of resistance to EGFR TKI in lung adenocarcinoma through MAPK activation and cellular plasticity
 
+[![](https://img.shields.io/badge/Preprint-10.1101/2025.05.07.652714-blue.svg)](https://doi.org/10.1101/2025.05.07.652714)
+
 This repository contains code related to the manuscript:
 
-> Zatzman, M., Quintanal-Villalonga, A. _et al_, Complementary modes of resistance to EGFR TKI in lung adenocarcinoma through MAPK activation and cellular plasticity
+> [Zatzman, M., Quintanal-Villalonga, A. _et al_, Complementary modes of resistance to EGFR TKI in lung adenocarcinoma through MAPK activation and cellular plasticity](https://doi.org/10.1101/2025.05.07.652714)
 
 ## Overview
 
